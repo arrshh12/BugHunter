@@ -1,0 +1,30 @@
+# AutoBugHunter 24/7 - Core Production & Test Dependencies
+# Compatible with Python 3.12, 3.13, and 3.14
+
+# Web Dashboard & Real-Time Log Streaming
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+jinja2>=3.1.4
+aiofiles>=24.1.0
+
+# Configuration, Typing & Data Validation
+pydantic>=2.9.0
+python-dotenv>=1.0.1
+
+# HTTP Client, Health Pings & System Metrics
+requests>=2.32.0
+httpx>=0.27.0
+psutil>=6.0.0
+sqlite-vec>=0.1.9
+
+# Test Framework & Asynchronous Testing Harness
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+
+# Static Linting & Code Hygiene (Optional on host, bundled in container)
+ruff>=0.7.0
+semgrep>=1.90.0
+
+# Headless Autonomous Bug Hunter Agent
+openhands-ai>=0.9.0

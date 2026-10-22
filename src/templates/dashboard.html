@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoBugHunter 24/7 // Mission Control</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            background-color: #090D16;
+            color: #F9FAFB;
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+        .terminal-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+        .terminal-scroll::-webkit-scrollbar-track {
+            background: #111827;
+        }
+        .terminal-scroll::-webkit-scrollbar-thumb {
+            background: #374151;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-6 flex flex-col gap-6">
+
+    <!-- 1. Top Command Header -->
+    <header class="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-[#111827] border border-[#1F2937] rounded-xl shadow-lg gap-4">
+        <div class="flex items-center gap-3">
+            <div class="p-2 bg-indigo-600/20 text-indigo-400 rounded-lg">
+                <i data-lucide="shield-alert" class="w-6 h-6"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight flex items-center gap-2">
+                    AutoBugHunter <span class="text-indigo-400 text-sm font-semibold px-2 py-0.5 bg-indigo-950/60 border border-indigo-800 rounded">24/7 DAEMON</span>
+                </h1>
+                <p class="text-xs text-gray-400 mono">Oracle ARM64 // Continuous Engineering Agent</p>
+            </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+            <!-- API Key Input -->
+            <div class="flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs">
+                <i data-lucide="key" class="w-3.5 h-3.5 text-gray-400"></i>
+                <input id="api-key-input" type="password" placeholder="API Key" onchange="saveApiKey(this.value)" class="bg-transparent text-gray-200 placeholder-gray-500 text-xs focus:outline-none w-24 md:w-32" />
+            </div>
+
+            <!-- Daemon Status Pill -->
+            <div id="status-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-900/60 bg-emerald-950/40 text-emerald-400 text-xs font-medium mono">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span id="daemon-status-text">ACTIVE SCANNING</span>
+            </div>
+
+            <!-- Controls -->
+            <button id="btn-pause" onclick="togglePause()" class="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-xs font-medium transition">
+                <i data-lucide="pause" class="w-4 h-4"></i>
+                <span id="btn-pause-text">Pause Scanning</span>
+            </button>
+            <button onclick="resetExhausted()" class="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-indigo-700 bg-indigo-900/50 hover:bg-indigo-900 text-indigo-200 text-xs font-medium transition">
+                <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                <span>Reset Exhausted Cache</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- 2. Top KPI Metric Strip -->
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="p-4 bg-[#111827] border border-[#1F2937] rounded-xl">
+            <div class="text-xs text-gray-400 font-medium">REPOSITORIES MONITORED</div>
+            <div id="kpi-repos" class="text-2xl font-bold mt-1 text-white mono">0</div>
+            <div id="kpi-exhausted" class="text-[11px] text-gray-500 mt-1">0 exhausted (clean)</div>
+        </div>
+        <div class="p-4 bg-[#111827] border border-[#1F2937] rounded-xl">
+            <div class="text-xs text-gray-400 font-medium">ATOMIC PRS DISPATCHED</div>
+            <div id="kpi-prs" class="text-2xl font-bold mt-1 text-indigo-400 mono">0</div>
+            <div class="text-[11px] text-gray-500 mt-1">Single bug per PR standard</div>
+        </div>
+        <div class="p-4 bg-[#111827] border border-[#1F2937] rounded-xl">
+            <div class="text-xs text-gray-400 font-medium">LLM ENGINE POOL</div>
+            <div id="kpi-keys" class="text-2xl font-bold mt-1 text-emerald-400 mono">0 / 0</div>
+            <div class="text-[11px] text-gray-500 mt-1">ScaleMax primary + fallbacks</div>
+        </div>
+        <div class="p-4 bg-[#111827] border border-[#1F2937] rounded-xl">
+            <div class="text-xs text-gray-400 font-medium">COLLISION GUARD CEILING</div>
+            <div class="text-2xl font-bold mt-1 text-amber-400 mono">&le; 5 PRs</div>
+            <div class="text-[11px] text-gray-500 mt-1">Diff limit: 3 files / 150 lines</div>
+        </div>
+    </section>
+
+    <!-- Main Grid: Repos Matrix & Terminal -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- 3. Repository Status Matrix (7 cols) -->
+        <div class="lg:col-span-7 p-4 bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col gap-3">
+            <div class="flex justify-between items-center pb-2 border-b border-gray-800">
+                <h2 class="text-sm font-semibold tracking-wide flex items-center gap-2">
+                    <i data-lucide="git-branch" class="w-4 h-4 text-indigo-400"></i>
+                    REPOSITORY FLEET MATRIX
+                </h2>
+                <span id="repo-count-badge" class="text-xs text-gray-400 mono">0 monitored</span>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs">
+                    <thead>
+                        <tr class="text-gray-400 border-b border-gray-800 mono">
+                            <th class="py-2 px-3">REPOSITORY</th>
+                            <th class="py-2 px-3">HEAD COMMIT</th>
+                            <th class="py-2 px-3">STATUS</th>
+                            <th class="py-2 px-3">OPEN PRS</th>
+                            <th class="py-2 px-3 text-right">ACTION</th>
+                        </tr>
+                    </thead>
+                    <tbody id="repo-table-body" class="divide-y divide-gray-800/50">
+                        <tr>
+                            <td colspan="5" class="py-4 text-center text-gray-500">Awaiting repository sync...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 4. Live Terminal Window (5 cols) -->
+        <div class="lg:col-span-5 p-4 bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col gap-3">
+            <div class="flex justify-between items-center pb-2 border-b border-gray-800">
+                <h2 class="text-sm font-semibold tracking-wide flex items-center gap-2">
+                    <i data-lucide="terminal" class="w-4 h-4 text-emerald-400"></i>
+                    DAEMON LIVE TELEMETRY
+                </h2>
+                <button onclick="clearTerminal()" class="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+            </div>
+
+            <div id="terminal" class="h-80 overflow-y-auto terminal-scroll bg-[#090D16] border border-gray-800 rounded-lg p-3 text-xs mono leading-relaxed space-y-1">
+                <div class="text-gray-500">[SYSTEM] Connecting to live log telemetry stream...</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Lower Grid: Keys & PR Feed -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- 5. Key Pool & Circuit Breakers (6 cols) -->
+        <div class="lg:col-span-6 p-4 bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col gap-3">
+            <div class="flex justify-between items-center pb-2 border-b border-gray-800">
+                <h2 class="text-sm font-semibold tracking-wide flex items-center gap-2">
+                    <i data-lucide="cpu" class="w-4 h-4 text-amber-400"></i>
+                    LLM ENGINE CIRCUIT BREAKERS
+                </h2>
+                <span class="text-xs text-gray-400 mono">Auto-Failover</span>
+            </div>
+            <div id="key-cards-container" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div class="p-3 bg-gray-900 border border-gray-800 rounded-lg text-xs text-gray-500">Loading keys...</div>
+            </div>
+        </div>
+
+        <!-- 6. Atomic PR Feed (6 cols) -->
+        <div class="lg:col-span-6 p-4 bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col gap-3">
+            <div class="flex justify-between items-center pb-2 border-b border-gray-800">
+                <h2 class="text-sm font-semibold tracking-wide flex items-center gap-2">
+                    <i data-lucide="git-pull-request" class="w-4 h-4 text-indigo-400"></i>
+                    RECENT ATOMIC PULL REQUESTS
+                </h2>
+                <span class="text-xs text-gray-400 mono">Audit Trail</span>
+            </div>
+            <div id="pr-feed-container" class="space-y-2 max-h-80 overflow-y-auto terminal-scroll">
+                <div class="p-3 text-center text-xs text-gray-500">No pull requests dispatched yet.</div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        function getApiKey() {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('key') || localStorage.getItem('bughunter_api_key') || '';
+        }
+
+        function saveApiKey(val) {
+            if (val) {
+                localStorage.setItem('bughunter_api_key', val.trim());
+            } else {
+                localStorage.removeItem('bughunter_api_key');
+            }
+            fetchState();
+        }
+
+        function authHeaders() {
+            const key = getApiKey();
+            return key ? { 'X-API-Key': key } : {};
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const input = document.getElementById('api-key-input');
+            if (input) input.value = getApiKey();
+        });
+
+        let isPaused = false;
+
+        async function fetchState() {
+            try {
+                const res = await fetch('/api/state', { headers: authHeaders() });
+                if (!res.ok) return;
+                const data = await res.json();
+                renderState(data);
+            } catch (e) {
+                console.error("State polling error:", e);
+            }
+        }
+
+        function renderState(data) {
+            // 1. Header & Status
+            isPaused = data.daemon.paused;
+            const statusPill = document.getElementById('status-pill');
+            const statusText = document.getElementById('daemon-status-text');
+            const btnPauseText = document.getElementById('btn-pause-text');
+
+            if (isPaused) {
+                statusPill.className = "flex items-center gap-2 px-3 py-1.5 rounded-full border border-amber-900/60 bg-amber-950/40 text-amber-400 text-xs font-medium mono";
+                statusText.innerText = "DAEMON PAUSED";
+                btnPauseText.innerText = "Resume Scanning";
+            } else {
+                statusPill.className = "flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-900/60 bg-emerald-950/40 text-emerald-400 text-xs font-medium mono";
+                statusText.innerText = data.daemon.current_repo ? `SCANNING ${data.daemon.current_repo}` : "ACTIVE SCANNING";
+                btnPauseText.innerText = "Pause Scanning";
+            }
+
+            // 2. KPIs
+            document.getElementById('kpi-repos').innerText = data.kpis.total_repos || 0;
+            document.getElementById('kpi-exhausted').innerText = `${data.kpis.exhausted_repos || 0} exhausted (clean)`;
+            document.getElementById('kpi-prs').innerText = data.kpis.total_prs_created || 0;
+            document.getElementById('kpi-keys').innerText = `${data.kpis.healthy_keys || 0} / ${data.kpis.total_keys || 0}`;
+            document.getElementById('repo-count-badge').innerText = `${data.repositories.length} monitored`;
+
+            // 3. Repositories Matrix
+            const tbody = document.getElementById('repo-table-body');
+            if (data.repositories.length > 0) {
+                tbody.innerHTML = data.repositories.map(r => {
+                    const sha = r.last_scanned_sha ? r.last_scanned_sha.substring(0, 7) : '--------';
+                    let badge = `<span class="px-2 py-0.5 rounded bg-gray-800 text-gray-400">${r.status}</span>`;
+                    if (r.fully_exhausted) {
+                        badge = `<span class="px-2 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800">CLEAN</span>`;
+                    } else if (r.status === 'SCANNING' || r.status === 'SYNCING') {
+                        badge = `<span class="px-2 py-0.5 rounded bg-indigo-950 text-indigo-400 border border-indigo-800 animate-pulse">${r.status}</span>`;
+                    } else if (r.status === 'PAUSED_MAX_PRS') {
+                        badge = `<span class="px-2 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800">MAX PRS</span>`;
+                    } else if (r.status === 'ERROR') {
+                        badge = `<span class="px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800">ERROR</span>`;
+                    }
+
+                    return `
+                        <tr class="hover:bg-gray-800/30 transition">
+                            <td class="py-2.5 px-3 font-medium text-white">${r.repo_slug}</td>
+                            <td class="py-2.5 px-3 mono text-gray-400">${sha}</td>
+                            <td class="py-2.5 px-3">${badge}</td>
+                            <td class="py-2.5 px-3 mono">${r.open_pr_count || 0}</td>
+                            <td class="py-2.5 px-3 text-right">
+                                <button onclick="scanNow('${r.repo_slug}')" class="px-2 py-1 rounded bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 text-[11px] font-medium transition">Scan</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            // 4. Key Pool
+            const keysContainer = document.getElementById('key-cards-container');
+            if (data.keys.length > 0) {
+                keysContainer.innerHTML = data.keys.map(k => {
+                    let stateColor = "text-emerald-400 border-emerald-900 bg-emerald-950/40";
+                    if (k.state === 'COOLDOWN') stateColor = "text-amber-400 border-amber-900 bg-amber-950/40";
+                    if (k.state === 'EXHAUSTED') stateColor = "text-red-400 border-red-900 bg-red-950/40";
+
+                    return `
+                        <div class="p-3 bg-[#090D16] border border-gray-800 rounded-lg flex flex-col gap-1.5">
+                            <div class="flex justify-between items-center">
+                                <span class="font-semibold text-white mono text-xs">${k.key_id} (${k.provider})</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] border ${stateColor} mono">${k.state}</span>
+                            </div>
+                            <div class="text-[11px] text-gray-400 truncate mono">${k.model}</div>
+                            <div class="text-[11px] text-gray-500 mono flex justify-between">
+                                <span>${k.masked_key}</span>
+                                <span>Uses: ${k.total_uses}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // 5. PR Feed
+            const prContainer = document.getElementById('pr-feed-container');
+            if (data.recent_prs && data.recent_prs.length > 0) {
+                prContainer.innerHTML = data.recent_prs.map(p => `
+                    <div class="p-3 bg-[#090D16] border border-gray-800 rounded-lg flex justify-between items-start text-xs">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-indigo-400 font-medium">${p.repo_slug}</span>
+                                <span class="text-gray-500 mono">#${p.pr_number}</span>
+                            </div>
+                            <div class="text-white mt-1 font-medium">${p.pr_title}</div>
+                            <div class="text-gray-500 text-[11px] mono mt-0.5">${p.file_modified || ''}</div>
+                        </div>
+                        <a href="${p.pr_url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 text-[11px]">
+                            View <i data-lucide="external-link" class="w-3 h-3"></i>
+                        </a>
+                    </div>
+                `).join('');
+                lucide.createIcons();
+            }
+        }
+
+        async function togglePause() {
+            await fetch('/api/control/toggle-pause', { method: 'POST', headers: authHeaders() });
+            fetchState();
+        }
+
+        async function resetExhausted() {
+            await fetch('/api/control/reset-exhausted', { method: 'POST', headers: authHeaders() });
+            fetchState();
+        }
+
+        async function scanNow(repoSlug) {
+            const [owner, repo] = repoSlug.split('/');
+            await fetch(`/api/control/scan-now/${owner}/${repo}`, { method: 'POST', headers: authHeaders() });
+            fetchState();
+        }
+
+        function clearTerminal() {
+            document.getElementById('terminal').innerHTML = '';
+        }
+
+        function appendLog(line) {
+            const terminal = document.getElementById('terminal');
+            const div = document.createElement('div');
+            if (line.includes('[PR CREATED]')) {
+                div.className = 'text-emerald-400 font-semibold';
+            } else if (line.includes('[WARN]')) {
+                div.className = 'text-amber-400';
+            } else if (line.includes('[ERROR]')) {
+                div.className = 'text-red-400 font-semibold';
+            } else if (line.includes('[STATIC]') || line.includes('[AGENT]')) {
+                div.className = 'text-indigo-300';
+            } else {
+                div.className = 'text-gray-300';
+            }
+            div.innerText = line;
+            terminal.appendChild(div);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        // Live WebSocket Telemetry
+        function connectLogsWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const key = getApiKey();
+            const qs = key ? `?token=${encodeURIComponent(key)}` : '';
+            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs${qs}`);
+
+            ws.onmessage = (event) => {
+                appendLog(event.data);
+            };
+
+            ws.onclose = () => {
+                setTimeout(connectLogsWebSocket, 3000);
+            };
+        }
+
+        // Start polling and websocket
+        fetchState();
+        setInterval(fetchState, 3000);
+        connectLogsWebSocket();
+    </script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+# AutoBugHunter 24/7 - Git Ignore Configuration
+
+# --------------------------------------------------
+# Secrets & Environment Configurations (CRITICAL)
+# --------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+
+# --------------------------------------------------
+# SQLite WAL Database & State Files
+# --------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-wal
+*.sqlite-shm
+
+# --------------------------------------------------
+# Autonomous Daemon Temporary Orchestration Artifacts (RULE-GIT-05)
+# --------------------------------------------------
+.skip_files.txt
+.static_findings.json
+.bug_fix_report.json
+*.tmp
+
+# --------------------------------------------------
+# Workspace Mounts & Target Repositories
+# --------------------------------------------------
+workspace/
+workspace/repos/
+workspace/state/
+repos/
+state/
+temp_test_dir/
+
+# --------------------------------------------------
+# Agent Workspaces & Teamwork Artifacts
+# --------------------------------------------------
+.agents/
+
+
+# --------------------------------------------------
+# Runtime Logs
+# --------------------------------------------------
+*.log
+bughunter.log
+bughunter.log.*
+logs/
+
+# --------------------------------------------------
+# Python Bytecode, Caches & Packaging
+# --------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --------------------------------------------------
+# Testing, Coverage & Linters
+# --------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+
+# --------------------------------------------------
+# Virtual Environments
+# --------------------------------------------------
+.venv/
+venv/
+ENV/
+env/
+
+# --------------------------------------------------
+# Operating System & IDE Bloat
+# --------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

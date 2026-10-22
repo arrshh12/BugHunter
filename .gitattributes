@@ -1,0 +1,48 @@
+# AutoBugHunter 24/7 - Git Attributes Configuration
+# Enforce Unix LF line endings across all platforms (Windows host & Linux ARM64 container)
+
+# Set default behavior to normalize text to LF
+* text=auto eol=lf
+
+# Python Source Code & Shell Scripts
+*.py text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Documentation & Text Artifacts
+*.md text eol=lf
+*.txt text eol=lf
+
+# Data & Configuration Files
+*.json text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Web Dashboard Templates & Assets
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+
+# Container & Environment Specifications
+Dockerfile text eol=lf
+.env.example text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Scripts & Git Hooks
+scripts/* text eol=lf
+hooks/* text eol=lf
+
+# Binary Assets (Prevent line ending normalization)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.sqlite binary
+*.sqlite3 binary
+*.db binary
+*.tar.gz binary
+*.zip binary
+*.whl binary
