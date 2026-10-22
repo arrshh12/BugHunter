@@ -41,7 +41,7 @@ def test_sync_repository_raises_runtime_error_on_failed_clone(tmp_path: Path, mo
 
     monkeypatch.setattr(subprocess, "run", mock_fail)
     with pytest.raises(RuntimeError, match=r"Failed to clone repository owner/failed-clone-repo"):
-        gm.sync_repository("owner/failed-clone-repo")
+        gm.sync_repository("owner/failed-clone-repo", allow_init=False)
 
     # 2. Generic Exception during clone
     def mock_exc(cmd, *args, **kwargs):
@@ -51,7 +51,7 @@ def test_sync_repository_raises_runtime_error_on_failed_clone(tmp_path: Path, mo
 
     monkeypatch.setattr(subprocess, "run", mock_exc)
     with pytest.raises(RuntimeError, match=r"Failed to clone repository owner/failed-clone-repo-2"):
-        gm.sync_repository("owner/failed-clone-repo-2")
+        gm.sync_repository("owner/failed-clone-repo-2", allow_init=False)
 
 
 def test_get_open_bot_prs_and_skip_files(tmp_path: Path):

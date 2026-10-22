@@ -454,8 +454,8 @@ class StaticScanner:
             f["triage"] = triage_info
             f["primary_axis"] = triage_info["primary_axis"]
             f["composite_score"] = triage_info["composite_score"]
-            f["stride_category"] = triage_info["stride_category"]
-            f["owasp_category"] = triage_info["owasp_category"]
+            f["stride_category"] = f.get("stride_category") or triage_info["stride_category"]
+            f["owasp_category"] = f.get("owasp_category") or triage_info["owasp_category"]
             f["is_boundary_exposed"] = triage_info["is_boundary_exposed"]
 
             filtered.append(f)

@@ -156,7 +156,7 @@ class TestGitManagerCredentialProtectionAdversarial:
         with patch("subprocess.run", side_effect=mock_subprocess_run):
             # sync_repository catches CalledProcessError, scrubs it, and raises RuntimeError
             with pytest.raises(RuntimeError, match="Failed to clone repository owner/repo"):
-                gm.sync_repository("owner/repo")
+                gm.sync_repository("owner/repo", allow_init=False)
 
             # Check that the exception object itself had cmd and stderr scrubbed
             assert auth_b64 not in str(error_to_raise.cmd)
@@ -359,7 +359,7 @@ class TestWebServerAuthAndCSWSHAdversarial:
 
     def test_defensive_http_headers_present(self, setup_app_and_orchestrator):
         """All HTTP responses must carry X-Frame-Options: DENY and X-Content-Type-Options: nosniff."""
-        _, client, _ = setup_app_and_orchestrator
+        _, client, orchestrator = setup_app_and_orchestrator
 
         # GET /
         resp_root = client.get("/")
@@ -425,7 +425,7 @@ class TestWebServerAuthAndCSWSHAdversarial:
 
     def test_scan_now_slug_validation_adversarial(self, setup_app_and_orchestrator):
         """Enforce strict slug validation on POST /api/control/scan-now/{owner}/{repo}."""
-        _, client, _ = setup_app_and_orchestrator
+        _, client, orchestrator = setup_app_and_orchestrator
         headers = {"X-API-Key": "UltraSecretKey_2026_Secure!"}
 
         malicious_routes = [
@@ -447,7 +447,7 @@ class TestWebServerAuthAndCSWSHAdversarial:
 
     def test_websocket_cswsh_origin_validation_adversarial(self, setup_app_and_orchestrator):
         """Cross-Site WebSocket Hijacking check: reject evil origins and accept authorized origins."""
-        _, client, _ = setup_app_and_orchestrator
+        _, client, orchestrator = setup_app_and_orchestrator
 
         # 1. Evil origins must be rejected with 1008
         evil_origins = [
@@ -474,17 +474,18 @@ class TestWebServerAuthAndCSWSHAdversarial:
             "http://testclient",
             "http://testserver",
         ]
+        auth_token = orchestrator.config.dashboard_api_key
         for origin in allowed_origins:
-            with client.websocket_connect("/ws/logs", headers={"Origin": origin}) as ws:
+            with client.websocket_connect(f"/ws/logs?token={auth_token}", headers={"Origin": origin}) as ws:
                 assert ws is not None
 
         # 3. Missing origin (e.g. CLI client / python script) must be accepted
-        with client.websocket_connect("/ws/logs") as ws:
+        with client.websocket_connect(f"/ws/logs?token={auth_token}") as ws:
             assert ws is not None
 
     def test_websocket_spoofed_subdomain_origins(self, setup_app_and_orchestrator):
         """Reject subdomains and tricked prefixes trying to impersonate localhost."""
-        _, client, _ = setup_app_and_orchestrator
+        _, client, orchestrator = setup_app_and_orchestrator
 
         spoofed_subdomains = [
             "http://localhost.attacker.com",

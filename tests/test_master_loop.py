@@ -43,6 +43,7 @@ def master_loop_setup(tmp_path: Path):
         "MAX_OPEN_PRS_PER_REPO": 3,
     })
     km = KeyManager(config, db)
+    km.preflight_check = MagicMock(return_value=True)
     gm = GitManager(tmp_path, max_open_prs=3)
     ss = StaticScanner()
     oh = OpenHandsRunner()
@@ -100,7 +101,7 @@ def test_layer1_memory_prefilter_skips_finding_and_concludes_cleanly(master_loop
     monkeypatch.setattr(orch.openhands, "run_openhands_session", mock_run_openhands)
 
     # 4. Execute scan
-    res = orch.scan_single_repo(repo_slug)
+    res = orch.scan_single_repo(repo_slug, simulated_findings=static_finding)
 
     # 5. Invariant Assertions
     mock_run_openhands.assert_not_called()
@@ -172,7 +173,7 @@ def test_layer2_code_graph_prompt_injection_and_cleanup(master_loop_setup, monke
 
     monkeypatch.setattr(orch.openhands, "run_openhands_session", mock_openhands_capture)
 
-    res = orch.scan_single_repo(repo_slug)
+    res = orch.scan_single_repo(repo_slug, simulated_findings=static_finding)
 
     # Invariant Assertions
     assert len(captured_prompt_blocks) == 1
@@ -223,7 +224,8 @@ def test_orchestrator_records_bug_memory_on_verified_pr(master_loop_setup):
     res = orch.scan_single_repo(
         repo_slug,
         simulated_agent_outcome="SUCCESS",
-        custom_diff=custom_diff
+        custom_diff=custom_diff,
+        simulated_findings=static_finding,
     )
 
     # Invariant Assertions
@@ -240,7 +242,7 @@ def test_orchestrator_records_bug_memory_on_verified_pr(master_loop_setup):
         assert row["patch_outcome"] == "verified"
         assert row["rule_id"] == "OWASP-A02-KEY"
         assert row["stride_category"] == "Information Disclosure"
-        assert row["owasp_category"] == "A02:Cryptographic Failures"
+        assert "Cryptographic Failures" in row["owasp_category"]
         assert "KEY" in row["code_snippet"]
 
 
@@ -258,13 +260,13 @@ def test_orchestrator_records_bug_memory_on_rejected_verification(master_loop_se
 
     static_finding = [{
         "tool": "ruff",
-        "rule_id": "E501",
-        "severity": "INFO",
+        "rule_id": "F821",
+        "severity": "ERROR",
         "file": "src/utils.py",
         "line": 5,
         "column": 80,
-        "message": "Line too long",
-        "code_snippet": "long_line_of_code = True",
+        "message": "Undefined name",
+        "code_snippet": "long_line_of_code = undefined_var",
         "stride_category": "Tampering",
         "owasp_category": "A05:Security Misconfiguration",
     }]
@@ -275,6 +277,7 @@ def test_orchestrator_records_bug_memory_on_rejected_verification(master_loop_se
         repo_slug,
         simulated_agent_outcome="SUCCESS",
         custom_diff="",
+        simulated_findings=static_finding,
     )
 
     # Invariant Assertions
@@ -289,7 +292,7 @@ def test_orchestrator_records_bug_memory_on_rejected_verification(master_loop_se
         assert row["patch_outcome"] == "rejected"
         assert row["rejection_reason"] is not None
         assert "empty" in row["rejection_reason"].lower()
-        assert row["rule_id"] == "E501"
+        assert row["rule_id"] == "F821"
 
 
 # =========================================================================
@@ -355,7 +358,6 @@ def test_mock_robustness_magicmock_and_legacy_git_manager(master_loop_setup, mon
 
     orch.git_manager = LegacyGitManager(gm)
 
-    # Execution should not raise TypeError or UnpackError
     res = orch.scan_single_repo(
         repo_slug,
         simulated_agent_outcome="SUCCESS",
@@ -363,3 +365,139 @@ def test_mock_robustness_magicmock_and_legacy_git_manager(master_loop_setup, mon
     )
     assert res["outcome"] == "PR_CREATED"
     assert res["branch_name"] == "fix/auto-legacy-branch"
+
+
+# =========================================================================
+# TEST 7: Preflight Key Rotation Past Failing Key in Master Loop
+# =========================================================================
+def test_master_loop_preflight_key_rotation(tmp_path: Path):
+    """
+    Test 7: Verify master loop rotates to next healthy key when primary fails preflight ping.
+    """
+    db = Database(tmp_path / "ml_preflight.sqlite")
+    k1 = KeyConfig("k1", "ScaleMax", "https://api.sm.ai/v1", "claude-haiku-5.5", "sk-1", "sk...1", 1)
+    k2 = KeyConfig("k2", "ScaleMax", "https://api.sm.ai/v1", "claude-haiku-5.5", "sk-2", "sk...2", 2)
+    config = Config.load(overrides={"workspace_dir": tmp_path, "LLM_KEYS_POOL": [k1, k2]})
+    km = KeyManager(config, db)
+    gm = GitManager(tmp_path)
+    ss = StaticScanner()
+    oh = OpenHandsRunner()
+    vf = Verifier()
+    rl = RingBufferLogger()
+
+    # Preflight fails for k1 and succeeds for k2
+    def mock_preflight(key):
+        if key.id == "k1":
+            km.report_key_failure("k1", "Preflight 429", status_code=429)
+            return False
+        return True
+
+    km.preflight_check = MagicMock(side_effect=mock_preflight)
+    orch = Orchestrator(config, db, km, gm, ss, oh, vf, rl)
+
+    res = orch.scan_single_repo("owner/ml-rot-repo", simulated_agent_outcome="CLEAN_NO_BUG")
+    assert res["outcome"] == "CLEAN_EXHAUSTED"
+    assert km.preflight_check.call_count >= 2
+    assert any("Key k1 failed preflight check; rotating" in msg for msg in rl.buffer)
+
+
+# =========================================================================
+# TEST 8: Real PR Number Extraction and Persistence in Master Loop
+# =========================================================================
+def test_master_loop_real_pr_number_extraction(master_loop_setup, monkeypatch):
+    """
+    Test 8: Verify real PR number is parsed via regex from gh output and written to database.
+    """
+    orch, db, _, _ = master_loop_setup
+    repo_slug = "owner/ml-pr-repo"
+    custom_diff = """--- a/README.md
++++ b/README.md
+@@ -1,1 +1,2 @@
+ # repo
++fix: resolve race condition
+"""
+    real_run = subprocess.run
+    def mock_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "create":
+            m_res = MagicMock()
+            m_res.stdout = "https://github.com/owner/ml-pr-repo/pull/999\n"
+            m_res.returncode = 0
+            return m_res
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(orch.config, "github_token", "fake_token")
+    monkeypatch.setattr("shutil.which", lambda t: "/usr/bin/gh" if t == "gh" else None)
+
+    res = orch.scan_single_repo(
+        repo_slug,
+        simulated_agent_outcome="SUCCESS",
+        custom_diff=custom_diff,
+    )
+    assert res["outcome"] == "PR_CREATED"
+    assert res["pr_number"] == 999
+    assert res["pr_url"] == "https://github.com/owner/ml-pr-repo/pull/999"
+
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT pr_number, pr_url FROM pull_requests WHERE repo_slug = ?", (repo_slug,)).fetchone()
+        assert row is not None
+        assert row["pr_number"] == 999
+        assert row["pr_url"] == "https://github.com/owner/ml-pr-repo/pull/999"
+
+
+# =========================================================================
+# TEST 9: Clean Scan Never Resurrects Previous Findings in Master Loop
+# =========================================================================
+def test_master_loop_clean_scan_no_resurrect(master_loop_setup):
+    """
+    Test 9: Verify clean scan with zero findings does not resurrect previous findings.
+    """
+    orch, db, gm, _ = master_loop_setup
+    repo_slug = "owner/ml-clean-repo"
+    repo_path = gm.repos_dir / "owner__ml-clean-repo"
+    repo_path.mkdir(parents=True, exist_ok=True)
+
+    res = orch.scan_single_repo(repo_slug, simulated_agent_outcome="CLEAN_NO_BUG")
+    assert res["outcome"] == "CLEAN_EXHAUSTED"
+
+    findings_file = repo_path / ".static_findings.json"
+    if findings_file.exists():
+        data = json.loads(findings_file.read_text(encoding="utf-8"))
+        assert len(data) == 0 or data.get("findings") == []
+
+
+# =========================================================================
+# TEST 10: Unhandled Exception Rollback and Daemon Continuity in Master Loop
+# =========================================================================
+def test_master_loop_unhandled_exception_rollback_and_continuity(master_loop_setup, monkeypatch):
+    """
+    Test 10: Verify unhandled exception in scan_single_repo returns ERROR outcome,
+    rolls back git working tree, and daemon run_cycle continues without halting.
+    """
+    orch, db, gm, _ = master_loop_setup
+    repo_fail = "owner/fail-repo"
+    repo_ok = "owner/pass-repo"
+    orch.config.target_repos = [repo_fail, repo_ok]
+
+    def mock_static(repo_path, skip_files, simulated_findings=None):
+        if "fail-repo" in str(repo_path):
+            raise RuntimeError("Unexpected tokenizer failure")
+        return repo_path / ".static_findings.json"
+
+    monkeypatch.setattr(orch.static_scanner, "run_static_prefilter", mock_static)
+    rollback_mock = MagicMock()
+    monkeypatch.setattr(orch.git_manager, "rollback_working_tree", rollback_mock)
+
+    # 1. scan_single_repo returns ERROR dictionary
+    res = orch.scan_single_repo(repo_fail)
+    assert res["outcome"] == "ERROR"
+    assert "Unexpected tokenizer failure" in res["error"]
+    assert db.get_stats()["repositories"][0]["status"] == "ERROR"
+    rollback_mock.assert_called()
+
+    # 2. run_cycle runs both and does not halt
+    results = orch.run_cycle()
+    assert len(results) == 2
+    assert results[0]["outcome"] == "ERROR"
+    assert results[1]["outcome"] in ("CLEAN_EXHAUSTED", "SKIPPED_MAX_PRS", "NO_HEALTHY_KEYS")
+

@@ -27,6 +27,7 @@ def orchestrator_setup(tmp_path: Path):
         "MAX_OPEN_PRS_PER_REPO": 3
     })
     km = KeyManager(config, db)
+    km.preflight_check = MagicMock(return_value=True)
     gm = GitManager(tmp_path, max_open_prs=3)
     ss = StaticScanner()
     oh = OpenHandsRunner()
@@ -278,5 +279,138 @@ def test_main_daemon_loop_catches_transient_exception():
         assert call_count == 2
         mock_logger.log.assert_any_call("ERROR", "Unhandled exception in daemon scan cycle: Transient DB lock or network error")
         assert mock_sleep.call_count >= 1
+
+
+def test_preflight_ping_loop_rotates_past_failing_key(tmp_path: Path):
+    """Verify that when a primary key fails preflight check, the orchestrator logs a warning and rotates to the next healthy key."""
+    db = Database(tmp_path / "preflight_test.sqlite")
+    k1 = KeyConfig("k1", "ScaleMax", "https://api.sm.ai/v1", "claude-haiku-5.5", "sk-1111", "sk...1111", 1)
+    k2 = KeyConfig("k2", "ScaleMax", "https://api.sm.ai/v1", "claude-haiku-5.5", "sk-2222", "sk...2222", 2)
+    config = Config.load(overrides={
+        "workspace_dir": tmp_path,
+        "LLM_KEYS_POOL": [k1, k2],
+        "target_repos": ["owner/rot-repo"],
+    })
+    km = KeyManager(config, db)
+    gm = GitManager(tmp_path)
+    ss = StaticScanner()
+    oh = OpenHandsRunner()
+    vf = Verifier()
+    rl = RingBufferLogger()
+
+    # Preflight check fails for k1 and succeeds for k2
+    def mock_preflight(key):
+        if key.id == "k1":
+            km.report_key_failure("k1", "Rate limit on ping", status_code=429)
+            return False
+        return True
+
+    km.preflight_check = MagicMock(side_effect=mock_preflight)
+    orch = Orchestrator(config, db, km, gm, ss, oh, vf, rl)
+
+    res = orch.scan_single_repo("owner/rot-repo", simulated_agent_outcome="CLEAN_NO_BUG")
+    assert res["outcome"] == "CLEAN_EXHAUSTED"
+
+    # Verify km.preflight_check was called for k1, failed, then rotated to k2
+    assert km.preflight_check.call_count >= 2
+    assert any("Key k1 failed preflight check; rotating" in msg for msg in rl.buffer)
+
+
+def test_pr_number_extraction_from_gh_pr_create_output_url(orchestrator_setup, monkeypatch):
+    """Verify actual PR number is extracted via regex from gh pr create output URL and saved in DB."""
+    import subprocess
+    orch, db, _, _ = orchestrator_setup
+    repo_slug = "owner/real-pr-repo"
+
+    custom_diff = """--- a/README.md
++++ b/README.md
+@@ -1,1 +1,2 @@
+ # repo
++fix: critical fix
+"""
+    real_sub_run = subprocess.run
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "create":
+            mock_res = MagicMock()
+            mock_res.stdout = "https://github.com/owner/real-pr-repo/pull/742\n"
+            mock_res.stderr = ""
+            mock_res.returncode = 0
+            return mock_res
+        return real_sub_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+    monkeypatch.setattr(orch.config, "github_token", "fake_token")
+    monkeypatch.setattr("shutil.which", lambda tool: "/usr/bin/gh" if tool == "gh" else None)
+
+    res = orch.scan_single_repo(
+        repo_slug,
+        simulated_agent_outcome="SUCCESS",
+        custom_diff=custom_diff,
+    )
+
+    assert res["outcome"] == "PR_CREATED"
+    assert res["pr_number"] == 742
+    assert res["pr_url"] == "https://github.com/owner/real-pr-repo/pull/742"
+
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT pr_number, pr_url FROM pull_requests WHERE repo_slug = ?", (repo_slug,)).fetchone()
+        assert row is not None
+        assert row["pr_number"] == 742
+        assert row["pr_url"] == "https://github.com/owner/real-pr-repo/pull/742"
+
+        log_row = conn.execute("SELECT outcome, details FROM scan_logs WHERE repo_slug = ? AND outcome = 'PR_CREATED'", (repo_slug,)).fetchone()
+        assert log_row is not None
+        assert "742" in log_row["details"]
+
+
+def test_clean_scan_does_not_resurrect_previous_findings(orchestrator_setup):
+    """Verify that a clean scan with 0 findings does not resurrect old findings."""
+    import json
+    orch, db, gm, _ = orchestrator_setup
+    repo_slug = "owner/clean-no-resurrect"
+    repo_path = gm.repos_dir / "owner__clean-no-resurrect"
+    repo_path.mkdir(parents=True, exist_ok=True)
+
+    # Initial scan with clean outcome
+    res = orch.scan_single_repo(repo_slug, simulated_agent_outcome="CLEAN_NO_BUG")
+    assert res["outcome"] == "CLEAN_EXHAUSTED"
+
+    findings_file = repo_path / ".static_findings.json"
+    if findings_file.exists():
+        data = json.loads(findings_file.read_text(encoding="utf-8"))
+        assert len(data) == 0 or data.get("findings") == []
+
+
+def test_unhandled_exception_in_scan_single_repo_returns_error_and_daemon_continues(orchestrator_setup, monkeypatch):
+    """Verify that an unexpected exception in scan_single_repo returns ERROR outcome, rolls back working tree, and daemon run_cycle continues."""
+    orch, db, gm, _ = orchestrator_setup
+    repo_slug_fail = "owner/failing-repo"
+    repo_slug_ok = "owner/ok-repo"
+
+    orch.config.target_repos = [repo_slug_fail, repo_slug_ok]
+
+    # Force an unhandled exception when scanning repo_slug_fail
+    def mock_static_prefilter(repo_path, skip_files, simulated_findings=None):
+        if "failing-repo" in str(repo_path):
+            raise RuntimeError("Corrupt AST parser crash")
+        return repo_path / ".static_findings.json"
+
+    monkeypatch.setattr(orch.static_scanner, "run_static_prefilter", mock_static_prefilter)
+    rollback_mock = MagicMock()
+    monkeypatch.setattr(orch.git_manager, "rollback_working_tree", rollback_mock)
+
+    # 1. Direct scan_single_repo returns ERROR dictionary without raising
+    res_fail = orch.scan_single_repo(repo_slug_fail)
+    assert res_fail["outcome"] == "ERROR"
+    assert "Corrupt AST parser crash" in res_fail["error"]
+    assert db.get_stats()["repositories"][0]["status"] == "ERROR"
+    rollback_mock.assert_called()
+
+    # 2. run_cycle processes both repos: fail repo does not crash daemon, ok repo completes
+    results = orch.run_cycle()
+    assert len(results) == 2
+    assert results[0]["outcome"] == "ERROR"
+    assert results[1]["outcome"] in ("CLEAN_EXHAUSTED", "SKIPPED_MAX_PRS", "NO_HEALTHY_KEYS")
+
 
 
