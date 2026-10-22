@@ -125,3 +125,15 @@ def test_static_scanner_prefilter_retains_hardened_rules(tmp_path: Path):
     surviving_rules = {f["rule_id"] for f in results}
     assert surviving_rules == {"INJECTION", "INSECURE_CIPHER", "COMMAND_INJECTION", "NULL_POINTER"}
 
+
+def test_five_axis_triage_plr09_routes_to_architecture():
+    """Verify PLR0912 and PLR0915 complexity rules route to Architecture (AXIS_ARCHITECTURE)."""
+    engine = FiveAxisTriageEngine()
+    assert engine.classify_axis("PLR0912", "Too many branches (13 > 12)") == FiveAxisTriageEngine.AXIS_ARCHITECTURE
+    assert engine.classify_axis("PLR0915", "Too many statements (55 > 50)") == FiveAxisTriageEngine.AXIS_ARCHITECTURE
+    assert engine.classify_axis("PLR0911", "Too many return statements (7 > 6)") == FiveAxisTriageEngine.AXIS_ARCHITECTURE
+    assert engine.classify_axis("PLR0913", "Too many arguments (6 > 5)") == FiveAxisTriageEngine.AXIS_ARCHITECTURE
+    # Ensure other PLR rules still route to Correctness
+    assert engine.classify_axis("PLR2004", "Magic value used in comparison") == FiveAxisTriageEngine.AXIS_CORRECTNESS
+
+

@@ -177,6 +177,13 @@
         // Initialize Lucide icons
         lucide.createIcons();
 
+        function escapeHtml(str) {
+            if (!str) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
         function getApiKey() {
             const params = new URLSearchParams(window.location.search);
             return params.get('key') || localStorage.getItem('bughunter_api_key') || '';
@@ -254,14 +261,15 @@
                         badge = `<span class="px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800">ERROR</span>`;
                     }
 
+                    const safeRepoSlug = escapeHtml(r.repo_slug);
                     return `
                         <tr class="hover:bg-gray-800/30 transition">
-                            <td class="py-2.5 px-3 font-medium text-white">${r.repo_slug}</td>
+                            <td class="py-2.5 px-3 font-medium text-white">${safeRepoSlug}</td>
                             <td class="py-2.5 px-3 mono text-gray-400">${sha}</td>
                             <td class="py-2.5 px-3">${badge}</td>
                             <td class="py-2.5 px-3 mono">${r.open_pr_count || 0}</td>
                             <td class="py-2.5 px-3 text-right">
-                                <button onclick="scanNow('${r.repo_slug}')" class="px-2 py-1 rounded bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 text-[11px] font-medium transition">Scan</button>
+                                <button onclick="scanNow('${safeRepoSlug}')" class="px-2 py-1 rounded bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 text-[11px] font-medium transition">Scan</button>
                             </td>
                         </tr>
                     `;
@@ -299,13 +307,13 @@
                     <div class="p-3 bg-[#090D16] border border-gray-800 rounded-lg flex justify-between items-start text-xs">
                         <div>
                             <div class="flex items-center gap-2">
-                                <span class="text-indigo-400 font-medium">${p.repo_slug}</span>
+                                <span class="text-indigo-400 font-medium">${escapeHtml(p.repo_slug)}</span>
                                 <span class="text-gray-500 mono">#${p.pr_number}</span>
                             </div>
-                            <div class="text-white mt-1 font-medium">${p.pr_title}</div>
-                            <div class="text-gray-500 text-[11px] mono mt-0.5">${p.file_modified || ''}</div>
+                            <div class="text-white mt-1 font-medium">${escapeHtml(p.pr_title)}</div>
+                            <div class="text-gray-500 text-[11px] mono mt-0.5">${escapeHtml(p.file_modified || '')}</div>
                         </div>
-                        <a href="${p.pr_url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 text-[11px]">
+                        <a href="${escapeHtml(p.pr_url)}" target="_blank" class="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 text-[11px]">
                             View <i data-lucide="external-link" class="w-3 h-3"></i>
                         </a>
                     </div>

@@ -140,7 +140,7 @@ class FiveAxisTriageEngine:
             or rule_upper.startswith("E9")
             or rule_upper.startswith("B")
             or rule_upper.startswith("PLE")
-            or rule_upper.startswith("PLR")
+            or (rule_upper.startswith("PLR") and not rule_upper.startswith("PLR09"))
             or rule_upper.startswith("ASYNC")
             or rule_upper.startswith("YTT")
         ):

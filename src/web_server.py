@@ -123,14 +123,13 @@ def create_app(orchestrator: Orchestrator, broadcaster: Optional[WebSocketBroadc
         bearer_token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else None
         candidate = token or header_key or bearer_token
 
-        if candidate:
-            if not api_key or not hmac.compare_digest(candidate, api_key):
+        if api_key:
+            if not candidate or not hmac.compare_digest(candidate, api_key):
                 await websocket.close(code=1008)
                 return
-        else:
-            if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
-                await websocket.close(code=1008)
-                return
+        elif client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+            await websocket.close(code=1008)
+            return
 
         origin = websocket.headers.get("origin")
         if origin is not None:

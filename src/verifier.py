@@ -20,6 +20,9 @@ class ConventionalTitle(str):
         instance._raw = raw or conventional
         return instance
 
+    def __hash__(self) -> int:
+        return super().__hash__()
+
     def __eq__(self, other: Any) -> bool:
         if super().__eq__(other):
             return True
