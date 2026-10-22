@@ -154,10 +154,9 @@ class TestGitManagerCredentialProtectionAdversarial:
             return real_run(cmd, *args, **kwargs)
 
         with patch("subprocess.run", side_effect=mock_subprocess_run):
-            # sync_repository catches CalledProcessError and scrubs it before fallback init
-            repo_path, branch, sha = gm.sync_repository("owner/repo")
-            assert repo_path.exists()
-            assert branch == "main"
+            # sync_repository catches CalledProcessError, scrubs it, and raises RuntimeError
+            with pytest.raises(RuntimeError, match="Failed to clone repository owner/repo"):
+                gm.sync_repository("owner/repo")
 
             # Check that the exception object itself had cmd and stderr scrubbed
             assert auth_b64 not in str(error_to_raise.cmd)

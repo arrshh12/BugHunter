@@ -226,7 +226,7 @@ class GitManager:
         # Fallback to target_repos_str if gh fails
         return [r.strip() for r in target_repos_str.replace("\n", ",").split(",") if r.strip()][:20]
 
-    def sync_repository(self, repo_slug: str, existing_path: Optional[Path] = None) -> tuple[Path, str, str]:
+    def sync_repository(self, repo_slug: str, existing_path: Optional[Path] = None, allow_init: bool = False) -> tuple[Path, str, str]:
         """Hard-reset sync working tree to origin default branch, returning (repo_path, default_branch, head_sha)."""
         validate_repo_slug(repo_slug)
         target_path = existing_path or (self.repos_dir / repo_slug.replace("/", "__"))
@@ -234,34 +234,7 @@ class GitManager:
 
         # If not already a git repository, clone or initialize
         if not (target_path / ".git").exists():
-            cloned = False
-            clean_clone_url = f"https://github.com/{repo_slug}.git"
-            clone_cmd = ["git"]
-            if self.github_token:
-                auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
-                auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
-                clone_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
-            clone_cmd.extend(["clone", clean_clone_url, str(target_path)])
-            try:
-                subprocess.run(
-                    clone_cmd,
-                    check=True,
-                    capture_output=True,
-                    timeout=120
-                )
-                cloned = True
-            except subprocess.CalledProcessError as e:
-                scrubbed_cmd = [self._scrub_credentials(str(c)) for c in e.cmd] if isinstance(e.cmd, list) else self._scrub_credentials(str(e.cmd))
-                e.cmd = scrubbed_cmd
-                if e.stderr:
-                    e.stderr = self._scrub_credentials(e.stderr)
-                if e.stdout:
-                    e.stdout = self._scrub_credentials(e.stdout)
-                cloned = False
-            except Exception:
-                cloned = False
-
-            if not cloned:
+            if allow_init:
                 subprocess.run(["git", "init", "-b", "main"], cwd=target_path, check=True, capture_output=True)
                 subprocess.run(["git", "config", "user.name", "AutoBugHunter[bot]"], cwd=target_path, check=True, capture_output=True)
                 subprocess.run(["git", "config", "user.email", "autobughunter[bot]@users.noreply.github.com"], cwd=target_path, check=True, capture_output=True)
@@ -270,6 +243,36 @@ class GitManager:
                     readme.write_text(f"# {repo_slug}\n", encoding="utf-8")
                     subprocess.run(["git", "add", "README.md"], cwd=target_path, check=True, capture_output=True)
                     subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=target_path, check=True, capture_output=True)
+            else:
+                cloned = False
+                clean_clone_url = f"https://github.com/{repo_slug}.git"
+                clone_cmd = ["git"]
+                if self.github_token:
+                    auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
+                    auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
+                    clone_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
+                clone_cmd.extend(["clone", clean_clone_url, str(target_path)])
+                try:
+                    subprocess.run(
+                        clone_cmd,
+                        check=True,
+                        capture_output=True,
+                        timeout=120
+                    )
+                    cloned = True
+                except subprocess.CalledProcessError as e:
+                    scrubbed_cmd = [self._scrub_credentials(str(c)) for c in e.cmd] if isinstance(e.cmd, list) else self._scrub_credentials(str(e.cmd))
+                    e.cmd = scrubbed_cmd
+                    if e.stderr:
+                        e.stderr = self._scrub_credentials(e.stderr)
+                    if e.stdout:
+                        e.stdout = self._scrub_credentials(e.stdout)
+                    cloned = False
+                except Exception:
+                    cloned = False
+
+                if not cloned:
+                    raise RuntimeError(f"Failed to clone repository {repo_slug}")
 
         # Abort any in-progress merges or rebases
         subprocess.run(["git", "rebase", "--abort"], cwd=target_path, check=False, capture_output=True)

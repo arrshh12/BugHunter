@@ -4,7 +4,7 @@ Unit tests for src/verifier.py: Diff bounds enforcer, secret leak detection, and
 
 from pathlib import Path
 import pytest
-from src.verifier import Verifier
+from src.verifier import ConventionalTitle, Verifier
 
 
 @pytest.fixture
@@ -512,5 +512,34 @@ def test_verifier_untracked_within_exact_150_lines_allowed(tmp_path: Path, verif
     assert res.diff_lines == 150
 
 
+def test_conventional_title_hash_and_collection_compatibility():
+    """Verify ConventionalTitle can be hashed, producing a valid int, and used in sets and dict keys."""
+    t1 = ConventionalTitle("fix(database): fix connection leak", "fix: fix connection leak")
+    t2 = ConventionalTitle("fix(database): fix connection leak", "fix: fix connection leak")
+    t3 = ConventionalTitle("fix(auth): fix session expiry")
 
+    # 1. hash produces a valid int
+    h1 = hash(t1)
+    assert isinstance(h1, int)
+    assert hash(t1) == hash(t2)
+    assert hash(t1) == hash("fix(database): fix connection leak")
 
+    # 2. set insertion and deduplication
+    s = {t1, t2, t3}
+    assert len(s) == 2
+    assert t1 in s
+    assert t3 in s
+    assert "fix(database): fix connection leak" in s
+
+    # 3. dict key storage and lookup
+    d = {t1: "database_val", t3: "auth_val"}
+    assert d[t1] == "database_val"
+    assert d[t2] == "database_val"
+    assert d["fix(database): fix connection leak"] == "database_val"
+    assert d[t3] == "auth_val"
+    assert len(d) == 2
+
+    # 4. Hash consistency with dict keys
+    d[t2] = "updated_val"
+    assert len(d) == 2
+    assert d[t1] == "updated_val"

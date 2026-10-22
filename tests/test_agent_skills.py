@@ -411,7 +411,7 @@ def test_verifier_reproducer_enforcement_in_pipeline(tmp_path: Path):
 def test_git_manager_scoped_atomic_branch(tmp_path: Path):
     """Verify scoped atomic branch format fix/{prefix}-{scope}-{repo_short}-{hex6} and fallback."""
     gm = GitManager(workspace_dir=tmp_path)
-    repo_path, _, _ = gm.sync_repository("owner/skills-repo")
+    repo_path, _, _ = gm.sync_repository("owner/skills-repo", allow_init=True)
 
     # 1. When scope is given: fix/auto-database-<repo_short>-<hex6>
     branch_scoped = gm.create_atomic_branch(repo_path, prefix="auto", scope="database")

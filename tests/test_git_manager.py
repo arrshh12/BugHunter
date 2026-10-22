@@ -21,7 +21,7 @@ def test_git_manager_init_and_discovery(tmp_path: Path):
 def test_git_sync_repository(tmp_path: Path):
     """Verify sync_repository creates a valid git repository and returns SHA."""
     gm = GitManager(workspace_dir=tmp_path)
-    repo_path, branch, sha = gm.sync_repository("owner/test-sync-repo")
+    repo_path, branch, sha = gm.sync_repository("owner/test-sync-repo", allow_init=True)
 
     assert repo_path.exists()
     assert (repo_path / ".git").exists()
@@ -29,10 +29,35 @@ def test_git_sync_repository(tmp_path: Path):
     assert len(sha) == 40
 
 
+def test_sync_repository_raises_runtime_error_on_failed_clone(tmp_path: Path, monkeypatch):
+    """Verify sync_repository raises RuntimeError when clone fails."""
+    gm = GitManager(workspace_dir=tmp_path)
+
+    # 1. CalledProcessError during clone
+    def mock_fail(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and "clone" in cmd:
+            raise subprocess.CalledProcessError(128, cmd, stderr="fatal: repository not found")
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_fail)
+    with pytest.raises(RuntimeError, match=r"Failed to clone repository owner/failed-clone-repo"):
+        gm.sync_repository("owner/failed-clone-repo")
+
+    # 2. Generic Exception during clone
+    def mock_exc(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and "clone" in cmd:
+            raise RuntimeError("Network unreachable")
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_exc)
+    with pytest.raises(RuntimeError, match=r"Failed to clone repository owner/failed-clone-repo-2"):
+        gm.sync_repository("owner/failed-clone-repo-2")
+
+
 def test_get_open_bot_prs_and_skip_files(tmp_path: Path):
     """Verify extracting modified files from open PRs and writing .skip_files.txt."""
     gm = GitManager(workspace_dir=tmp_path)
-    repo_path, _, _ = gm.sync_repository("owner/collision-repo")
+    repo_path, _, _ = gm.sync_repository("owner/collision-repo", allow_init=True)
 
     simulated_prs = [
         {"number": 10, "headRefName": "fix/auto-1", "files": [{"path": "src/auth.py"}, {"path": "src/user.py"}]},
@@ -55,7 +80,7 @@ def test_get_open_bot_prs_and_skip_files(tmp_path: Path):
 def test_create_atomic_branch_and_force_push_guard(tmp_path: Path):
     """Verify atomic branch naming and refusal of force pushes."""
     gm = GitManager(workspace_dir=tmp_path)
-    repo_path, _, _ = gm.sync_repository("owner/branch-repo")
+    repo_path, _, _ = gm.sync_repository("owner/branch-repo", allow_init=True)
 
     branch = gm.create_atomic_branch(repo_path, prefix="auto")
     assert branch.startswith("fix/auto-")
@@ -72,7 +97,7 @@ def test_create_atomic_branch_and_force_push_guard(tmp_path: Path):
 def test_rollback_working_tree_and_purge_artifacts(tmp_path: Path):
     """Verify rollback resets dirty modifications and cleans temporary files."""
     gm = GitManager(workspace_dir=tmp_path)
-    repo_path, branch, _ = gm.sync_repository("owner/rollback-repo")
+    repo_path, branch, _ = gm.sync_repository("owner/rollback-repo", allow_init=True)
 
     # Create dirty changes and temporary files
     dirty_file = repo_path / "README.md"

@@ -248,6 +248,12 @@ def test_web_server_websocket_token_auth(tmp_path: Path):
             pass
     assert exc_info.value.code == 1008
 
+    # 1b. Loopback client without token -> rejected 1008
+    with pytest.raises(WebSocketDisconnect) as exc_info_lb:
+        with client_auth.websocket_connect("/ws/logs"):
+            pass
+    assert exc_info_lb.value.code == 1008
+
     # 2. Invalid token -> rejected 1008
     with pytest.raises(WebSocketDisconnect) as exc_info2:
         with client_auth.websocket_connect("/ws/logs?token=wrong_key"):
@@ -358,5 +364,52 @@ def test_websocket_origin_allowed_origins_collection(test_app, monkeypatch):
     ) as ws:
         msg = ws.receive_text()
         assert len(msg) > 0
+
+
+def test_websocket_loopback_auth_enforcement_when_api_key_configured(tmp_path: Path):
+    """Verify WebSocket connection from loopback without token is rejected with 1008 when DASHBOARD_API_KEY is configured, and accepted with valid token."""
+    db = Database(tmp_path / "ws_loopback.sqlite")
+    k1 = KeyConfig("k1", "ScaleMax", "https://api.sm.ai/v1", "claude-haiku-5.5", "sk-12345678", "sk-1...5678", 1)
+    cfg_auth = Config.load(overrides={"workspace_dir": tmp_path, "LLM_KEYS_POOL": [k1], "DASHBOARD_API_KEY": "secret_loopback_key"})
+    rl = RingBufferLogger()
+    rl.log("INFO", "Loopback auth test log")
+    orch_auth = Orchestrator(cfg_auth, db, KeyManager(cfg_auth, db), GitManager(tmp_path), StaticScanner(), OpenHandsRunner(), Verifier(), rl)
+
+    # 1. Loopback client (127.0.0.1) without token -> rejected with 1008
+    client_loopback = TestClient(create_app(orch_auth, rl.broadcaster), client=("127.0.0.1", 52000))
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client_loopback.websocket_connect("/ws/logs"):
+            pass
+    assert exc_info.value.code == 1008
+
+    # 2. Loopback client (::1) without token -> rejected with 1008
+    client_ipv6 = TestClient(create_app(orch_auth, rl.broadcaster), client=("::1", 52000))
+    with pytest.raises(WebSocketDisconnect) as exc_info_ipv6:
+        with client_ipv6.websocket_connect("/ws/logs"):
+            pass
+    assert exc_info_ipv6.value.code == 1008
+
+    # 3. Default testclient without token -> rejected with 1008
+    client_default = TestClient(create_app(orch_auth, rl.broadcaster))
+    with pytest.raises(WebSocketDisconnect) as exc_info_default:
+        with client_default.websocket_connect("/ws/logs"):
+            pass
+    assert exc_info_default.value.code == 1008
+
+    # 4. Loopback client with valid token query param -> accepted
+    with client_loopback.websocket_connect("/ws/logs?token=secret_loopback_key") as ws:
+        msg = ws.receive_text()
+        assert "Loopback auth test log" in msg
+
+    # 5. Loopback client with valid X-API-Key header -> accepted
+    with client_loopback.websocket_connect("/ws/logs", headers={"X-API-Key": "secret_loopback_key"}) as ws:
+        msg = ws.receive_text()
+        assert "Loopback auth test log" in msg
+
+    # 6. Loopback client with valid Bearer token -> accepted
+    with client_loopback.websocket_connect("/ws/logs", headers={"Authorization": "Bearer secret_loopback_key"}) as ws:
+        msg = ws.receive_text()
+        assert "Loopback auth test log" in msg
+
 
 
