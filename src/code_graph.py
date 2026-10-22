@@ -108,8 +108,30 @@ class _AstSymbolVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        mod = node.module or ""
+        level = getattr(node, "level", 0)
+        parent_parts = [p for p in Path(self.rel_path.replace("\\", "/")).parent.parts if p and p != "."]
+
+        if level > 0:
+            up = level - 1
+            if up <= len(parent_parts):
+                base_parts = parent_parts[:len(parent_parts) - up] if up > 0 else parent_parts
+            else:
+                base_parts = []
+            prefix = ".".join(base_parts)
+        else:
+            prefix = ""
+
         for alias in node.names:
+            if level > 0:
+                if node.module:
+                    mod = f"{prefix}.{node.module}" if prefix else node.module
+                elif alias.name != "*":
+                    mod = f"{prefix}.{alias.name}" if prefix else alias.name
+                else:
+                    mod = prefix or "*"
+            else:
+                mod = node.module or ""
+
             self.imports.append({
                 "module": mod,
                 "symbol": alias.name,

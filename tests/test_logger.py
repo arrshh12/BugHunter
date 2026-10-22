@@ -104,3 +104,21 @@ def test_logger_rotating_file_handler_delegation(tmp_path: Path):
     assert log_file.exists()
     assert "Delegated write test" in log_file.read_text(encoding="utf-8")
 
+
+def test_setup_logger_reuses_file_handler_without_duplicate(tmp_path: Path):
+    """Verify setup_logger reuses ring_logger._file_handler to prevent dual handle locks."""
+    from logging.handlers import RotatingFileHandler
+
+    log_file = tmp_path / "single_handle.log"
+    logger, ring_logger, _ = setup_logger(name="test_single_handle", log_file=log_file)
+
+    # Verify logger has exactly ring_logger._file_handler and not a separate instance
+    file_handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+    assert len(file_handlers) == 1
+    assert file_handlers[0] is ring_logger._file_handler
+
+    logger.info("Test from logger")
+    ring_logger.log("INFO", "Test from ring_logger")
+    ring_logger.close()
+
+

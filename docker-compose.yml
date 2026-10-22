@@ -26,4 +26,4 @@ services:
       resources:
         limits:
           cpus: "3.5"
-          memory: 1800M
+          memory: 20G

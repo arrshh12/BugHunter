@@ -110,23 +110,66 @@ class FiveAxisTriageEngine:
         sev_upper = str(severity or "WARNING").upper()
         tool_lower = str(tool or "").lower()
 
-        # 1. Readability: Filter out cosmetic noise (E501, docstring, whitespace, formatting, import ordering, comments)
+        # 1. Security (highest priority, weight 100)
+        if rule_upper.startswith("S") or (
+            tool_lower == "semgrep" and any(k in rule_upper for k in ("SEC", "CWE", "OWASP"))
+        ):
+            return self.AXIS_SECURITY
+        if any(
+            k in msg_lower or k in rule_upper.lower()
+            for k in (
+                "vulnerability", "injection", "traversal", "xss", "csrf", "secret",
+                "token", "password", "leak", "cred", "hash", "deserializ", "pickle",
+                "permission", "insecure", "cipher", "cookie", "crypto",
+            )
+        ):
+            return self.AXIS_SECURITY
+        if "auth" in rule_upper.lower() or (
+            "auth" in msg_lower and (
+                "author" not in msg_lower
+                or "authoriz" in msg_lower
+                or "authoris" in msg_lower
+                or "auth" in re.sub(r"\bauthor(s)?\b", "", msg_lower)
+            )
+        ):
+            return self.AXIS_SECURITY
+
+        # 2. Correctness (weight 100)
+        if (
+            ((rule_upper.startswith("F") and not rule_upper.startswith("FIX")))
+            or rule_upper.startswith("E9")
+            or rule_upper.startswith("B")
+            or rule_upper.startswith("PLE")
+            or rule_upper.startswith("PLR")
+            or rule_upper.startswith("ASYNC")
+            or rule_upper.startswith("YTT")
+        ):
+            return self.AXIS_CORRECTNESS
+        if any(
+            k in msg_lower or k in rule_upper.lower()
+            for k in (
+                "undefined", "syntax", "null", "none", "exception", "unhandled", "error", "mutable default", "pointer"
+            )
+        ):
+            return self.AXIS_CORRECTNESS
+
+        # 3. Readability: Filter out cosmetic noise (E501, docstring, whitespace, formatting, import ordering, comments)
         if rule_upper == "E501" or "line too long" in msg_lower:
             return self.AXIS_READABILITY
-        if rule_upper.startswith("D") or "docstring" in msg_lower:
+        if bool(re.match(r"^D\d{3}$", rule_upper)) or "docstring" in msg_lower:
             return self.AXIS_READABILITY
         if (
-            rule_upper.startswith("I")
+            bool(re.match(r"^I\d{3}$", rule_upper))
             or "import order" in msg_lower
             or "unsorted import" in msg_lower
             or "import block" in msg_lower
         ):
             return self.AXIS_READABILITY
-        if rule_upper.startswith("Q") or "quote" in msg_lower:
+        if bool(re.match(r"^Q\d{3}$", rule_upper)) or "quote" in msg_lower:
             return self.AXIS_READABILITY
-        if rule_upper.startswith("COM") or "trailing comma" in msg_lower:
+        if bool(re.match(r"^COM\d{3}$", rule_upper)) or "trailing comma" in msg_lower:
             return self.AXIS_READABILITY
-        if rule_upper.startswith("N") or "naming" in msg_lower:
+        if bool(re.match(r"^N\d{3}$", rule_upper)) or "naming" in msg_lower:
             return self.AXIS_READABILITY
         if (
             rule_upper.startswith(("ERA", "PGH", "TD", "FIX"))
@@ -142,37 +185,6 @@ class FiveAxisTriageEngine:
             return self.AXIS_READABILITY
         if "formatting" in msg_lower:
             return self.AXIS_READABILITY
-
-        # 2. Security
-        if rule_upper.startswith("S") or (
-            tool_lower == "semgrep" and any(k in rule_upper for k in ("SEC", "CWE", "OWASP"))
-        ):
-            return self.AXIS_SECURITY
-        if any(
-            k in msg_lower or k in rule_upper.lower()
-            for k in (
-                "vulnerability", "injection", "traversal", "xss", "csrf", "secret",
-                "token", "password", "leak", "cred", "hash", "deserializ", "pickle", "permission"
-            )
-        ):
-            return self.AXIS_SECURITY
-
-        # 3. Correctness
-        if (
-            ((rule_upper.startswith("F") and not rule_upper.startswith("FIX")))
-            or rule_upper.startswith("E9")
-            or rule_upper.startswith("B")
-            or rule_upper.startswith("PLE")
-            or rule_upper.startswith("PLR")
-            or rule_upper.startswith("ASYNC")
-            or rule_upper.startswith("YTT")
-        ):
-            return self.AXIS_CORRECTNESS
-        if any(
-            k in msg_lower
-            for k in ("undefined", "syntax", "null", "none", "exception", "unhandled", "error", "mutable default")
-        ):
-            return self.AXIS_CORRECTNESS
 
         # 4. Performance
         if rule_upper.startswith("PERF") or rule_upper.startswith("UP") or "performance" in msg_lower or "n+1" in msg_lower:

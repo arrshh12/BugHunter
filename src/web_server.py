@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import os
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -140,6 +141,34 @@ def create_app(orchestrator: Orchestrator, broadcaster: Optional[WebSocketBroadc
                 configured_host = (orchestrator.config.dashboard_host or "").lower()
                 if configured_host:
                     allowed.add(configured_host)
+
+                # Check client Host header
+                host_header = websocket.headers.get("host", "").strip()
+                if host_header:
+                    parsed_client_host = (urlparse(f"//{host_header}").hostname or host_header.split(":")[0]).lower()
+                    if parsed_client_host:
+                        allowed.add(parsed_client_host)
+
+                # Check ALLOWED_ORIGINS env var (supports comma-separated string, list, tuple, set)
+                raw_allowed = os.environ.get("ALLOWED_ORIGINS", "")
+                if not raw_allowed and hasattr(orchestrator.config, "allowed_origins"):
+                    raw_allowed = getattr(orchestrator.config, "allowed_origins", "")
+
+                if raw_allowed:
+                    if isinstance(raw_allowed, str):
+                        origin_entries = [o.strip() for o in raw_allowed.split(",") if o.strip()]
+                    elif isinstance(raw_allowed, (list, tuple, set)):
+                        origin_entries = [str(o).strip() for o in raw_allowed if str(o).strip()]
+                    else:
+                        origin_entries = []
+                    for entry in origin_entries:
+                        if "://" in entry:
+                            entry_host = (urlparse(entry).hostname or "").lower()
+                        else:
+                            entry_host = (urlparse(f"//{entry}").hostname or entry.split(":")[0]).lower()
+                        if entry_host:
+                            allowed.add(entry_host)
+
                 if origin_host not in allowed:
                     await websocket.close(code=1008)
                     return

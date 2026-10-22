@@ -90,6 +90,92 @@ class GitManager:
             except Exception:
                 pass
 
+    def get_authenticated_user(self) -> Optional[str]:
+        """Return authenticated GitHub username using gh CLI or cached identity."""
+        if not self.github_token:
+            return None
+        if hasattr(self, "_cached_auth_user") and self._cached_auth_user:
+            return self._cached_auth_user
+        if shutil.which("gh"):
+            try:
+                res = subprocess.run(
+                    ["gh", "api", "user", "--jq", ".login"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=True
+                )
+                user = res.stdout.strip()
+                if user:
+                    self._cached_auth_user = user
+                    return user
+            except Exception:
+                pass
+        return None
+
+    def has_push_access(self, repo_slug: str) -> bool:
+        """Check whether authenticated user has direct push access to repo_slug."""
+        validate_repo_slug(repo_slug)
+        auth_user = self.get_authenticated_user()
+        if auth_user and repo_slug.lower().startswith(f"{auth_user.lower()}/"):
+            return True
+        if shutil.which("gh") and self.github_token:
+            try:
+                res = subprocess.run(
+                    ["gh", "api", f"repos/{repo_slug}", "--jq", ".permissions.push"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False
+                )
+                if res.returncode == 0 and res.stdout.strip().lower() == "true":
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def ensure_fork(self, repo_slug: str) -> Optional[str]:
+        """Ensure a fork of repo_slug exists under authenticated user's account, returning fork slug."""
+        validate_repo_slug(repo_slug)
+        auth_user = self.get_authenticated_user()
+        if not auth_user:
+            return None
+        parts = repo_slug.split("/")
+        if len(parts) != 2:
+            return None
+        repo_name = parts[1]
+        fork_slug = f"{auth_user}/{repo_name}"
+
+        if shutil.which("gh") and self.github_token:
+            # 1. Check if fork repo already exists
+            try:
+                res = subprocess.run(
+                    ["gh", "api", f"repos/{fork_slug}", "--jq", ".full_name"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False
+                )
+                if res.returncode == 0 and res.stdout.strip().lower() == fork_slug.lower():
+                    return fork_slug
+            except Exception:
+                pass
+
+            # 2. Trigger fork creation via gh CLI
+            try:
+                fork_res = subprocess.run(
+                    ["gh", "repo", "fork", repo_slug, "--clone=false"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False
+                )
+                if fork_res.returncode == 0:
+                    return fork_slug
+            except Exception:
+                pass
+        return None
+
     def discover_or_load_repos(self, target_repos_str: str, auto_discover: bool = False) -> list[str]:
         """Load target repositories from string or discover active repos via GitHub CLI."""
         if not auto_discover:
@@ -213,6 +299,21 @@ class GitManager:
         pull_cmd.extend(["pull", "--ff-only", "origin", default_branch])
         subprocess.run(pull_cmd, cwd=target_path, check=False, capture_output=True)
 
+        # In fork mode: configure fork remote if authenticated user lacks push access to repo_slug
+        if self.github_token and shutil.which("gh"):
+            try:
+                if not self.has_push_access(repo_slug):
+                    fork_slug = self.ensure_fork(repo_slug)
+                    if fork_slug:
+                        fork_url = f"https://github.com/{fork_slug}.git"
+                        p_fork = subprocess.run(["git", "remote", "get-url", "fork"], cwd=target_path, capture_output=True, text=True, check=False)
+                        if p_fork.returncode == 0:
+                            subprocess.run(["git", "remote", "set-url", "fork", fork_url], cwd=target_path, check=False, capture_output=True)
+                        else:
+                            subprocess.run(["git", "remote", "add", "fork", fork_url], cwd=target_path, check=False, capture_output=True)
+            except Exception:
+                pass
+
         # Get HEAD commit SHA
         p_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=target_path, capture_output=True, text=True, check=True)
         head_sha = p_sha.stdout.strip()
@@ -282,8 +383,8 @@ class GitManager:
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=repo_path, check=True, capture_output=True)
         return branch_name
 
-    def push_atomic_branch(self, repo_path: Path, branch_name: str, force: bool = False) -> None:
-        """Push branch to origin without force push (enforcing RULE-GIT-02)."""
+    def push_atomic_branch(self, repo_path: Path, branch_name: str, force: bool = False, remote: str = "origin") -> None:
+        """Push branch to origin or fork remote without force push (enforcing RULE-GIT-02)."""
         if force:
             raise ValueError("RULE-GIT-02 Violation: Force pushing is strictly prohibited")
 
@@ -298,7 +399,7 @@ class GitManager:
                 auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
                 auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
                 push_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
-            push_cmd.extend(["push", "origin", branch_name])
+            push_cmd.extend(["push", remote, branch_name])
             subprocess.run(push_cmd, cwd=repo_path, check=True, capture_output=True, timeout=120)
         except subprocess.CalledProcessError as e:
             scrubbed_cmd = [self._scrub_credentials(str(c)) for c in e.cmd] if isinstance(e.cmd, list) else self._scrub_credentials(str(e.cmd))
@@ -307,10 +408,37 @@ class GitManager:
                 e.stderr = self._scrub_credentials(e.stderr)
             if e.stdout:
                 e.stdout = self._scrub_credentials(e.stdout)
-            # In test environments without remote origin, ignore push failure
+
+            # Check if remote is configured
+            has_remote = False
+            try:
+                check_remote = subprocess.run(
+                    ["git", "remote", "get-url", remote],
+                    cwd=repo_path, capture_output=True, text=True, check=False
+                )
+                has_remote = (check_remote.returncode == 0 and bool(check_remote.stdout.strip()))
+            except Exception:
+                has_remote = False
+
+            if has_remote:
+                raise e
+            # In test environments without remote configured, ignore push failure
             pass
-        except Exception:
-            # In test environments without remote origin, ignore push failure
+        except Exception as e:
+            # Check if remote is configured before ignoring generic exceptions
+            has_remote = False
+            try:
+                check_remote = subprocess.run(
+                    ["git", "remote", "get-url", remote],
+                    cwd=repo_path, capture_output=True, text=True, check=False
+                )
+                has_remote = (check_remote.returncode == 0 and bool(check_remote.stdout.strip()))
+            except Exception:
+                has_remote = False
+
+            if has_remote:
+                raise e
+            # In test environments without remote configured, ignore push failure
             pass
 
     def rollback_working_tree(self, repo_path: Path, default_branch: str = "main") -> None:

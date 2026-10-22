@@ -161,3 +161,122 @@ def test_orchestrator_key_exhaustion_purges_temporary_artifacts(orchestrator_set
     assert not (repo_path / ".static_findings.json").exists()
     assert not (repo_path / ".bug_fix_report.json").exists()
 
+
+def test_orchestrator_force_queue_thread_safety(orchestrator_setup):
+    """Verify concurrent queue_force_scan calls from multiple threads do not corrupt the queue."""
+    import threading
+    orch, _, _, _ = orchestrator_setup
+
+    def enqueue_worker(prefix: int):
+        for i in range(25):
+            orch.queue_force_scan(f"owner/repo-{prefix}-{i}")
+
+    threads = [threading.Thread(target=enqueue_worker, args=(t,)) for t in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Verify all 100 unique items safely enqueued under lock
+    assert len(orch.force_queue) == 100
+
+
+def test_orchestrator_force_queue_concurrent_run_cycle(orchestrator_setup):
+    """Verify concurrent queue_force_scan and run_cycle popping do not raise IndexError."""
+    import threading
+    import time
+    orch, _, _, _ = orchestrator_setup
+    for i in range(10):
+        orch.queue_force_scan(f"owner/pre-{i}")
+
+    popped = []
+    def pop_worker():
+        for _ in range(20):
+            with orch._force_queue_lock:
+                if orch.force_queue:
+                    popped.append(orch.force_queue.pop(0))
+            time.sleep(0.001)
+
+    def push_worker():
+        for i in range(10):
+            orch.queue_force_scan(f"owner/concurrent-{i}")
+            time.sleep(0.001)
+
+    t1 = threading.Thread(target=pop_worker)
+    t2 = threading.Thread(target=push_worker)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(popped) > 0
+
+
+def test_orchestrator_task_prompt_resolved_relative_to_file(orchestrator_setup, tmp_path):
+    """Verify task_prompt_path resolves successfully even when cwd is changed."""
+    import os
+    orch, _, _, _ = orchestrator_setup
+    foreign_dir = tmp_path / "foreign_cwd"
+    foreign_dir.mkdir()
+
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(foreign_dir)
+        # Execute scan
+        res = orch.scan_single_repo("owner/repo1", simulated_agent_outcome="CLEAN_NO_BUG")
+        assert res["outcome"] in ("CLEAN_EXHAUSTED", "SKIPPED_MAX_PRS", "PAUSED")
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_main_daemon_loop_catches_transient_exception():
+    """Verify main() catches transient exceptions in run_cycle and keeps daemon alive."""
+    from unittest.mock import MagicMock, patch
+    from src.config import Config, KeyConfig
+
+    k1 = KeyConfig("k1", "ScaleMax", "https://api.sm.ai/v1", "claude-haiku-5.5", "sk-123", "sk...123", 1)
+    mock_config = Config(
+        github_token="ghp_test",
+        target_repos=["test/repo"],
+        scan_cooldown_seconds=0.01,
+        llm_keys=[k1],
+    )
+
+    with patch("main.Config.load", return_value=mock_config), \
+         patch("main.Database"), \
+         patch("main.setup_logger") as mock_setup_logger, \
+         patch("main.KeyManager"), \
+         patch("main.GitManager"), \
+         patch("main.StaticScanner"), \
+         patch("main.OpenHandsRunner"), \
+         patch("main.Verifier"), \
+         patch("main.Orchestrator") as mock_orch_cls, \
+         patch("main.create_app"), \
+         patch("main.threading.Thread"), \
+         patch("main.signal.signal"), \
+         patch("main.time.sleep") as mock_sleep:
+
+        mock_logger = MagicMock()
+        mock_setup_logger.return_value = (MagicMock(), mock_logger, MagicMock())
+
+        mock_orch = MagicMock()
+        call_count = 0
+        def fail_then_stop():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("Transient DB lock or network error")
+            mock_orch.stop_requested = True
+
+        mock_orch.stop_requested = False
+        mock_orch.run_cycle.side_effect = fail_then_stop
+        mock_orch_cls.return_value = mock_orch
+
+        from main import main
+        main()
+
+        assert call_count == 2
+        mock_logger.log.assert_any_call("ERROR", "Unhandled exception in daemon scan cycle: Transient DB lock or network error")
+        assert mock_sleep.call_count >= 1
+
+

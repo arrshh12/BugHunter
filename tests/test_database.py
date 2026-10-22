@@ -264,3 +264,31 @@ def test_database_wal_multithreaded_concurrency_stress(tmp_path: Path):
         journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
         assert journal_mode.upper() == "WAL"
 
+
+def test_query_similar_bugs_fallback_limit_500(tmp_path: Path):
+    """Verify pure-Python fallback query applies ORDER BY id DESC LIMIT 500."""
+    from unittest.mock import patch
+    db = Database(tmp_path / "limit_test.sqlite")
+
+    # Ingest 600 records into bug_memory
+    with db.get_connection() as conn:
+        for i in range(600):
+            conn.execute(
+                "INSERT INTO bug_memory (repo_slug, commit_sha, rule_id, file_path, code_snippet, patch_outcome) "
+                "VALUES ('repo', 'sha', 'R1', 'f.py', ?, 'rejected')",
+                (f"code_{i}",)
+            )
+
+    # Force pure-Python fallback mode by patching _has_vec_table
+    with patch.object(db, "_has_vec_table", return_value=False):
+        # Query for newest record (id 600)
+        results = db.query_similar_bugs("code_599", rule_id="R1", limit=10)
+        assert len(results) > 0
+        # Check that candidate set examined only the latest 500 records (id >= 101)
+        assert all(r["id"] >= 101 for r in results)
+
+        # Query for code_50 (id 51, outside the latest 500)
+        old_results = db.query_similar_bugs("code_50", rule_id="R1", limit=10)
+        assert not any(r["code_snippet"] == "code_50" for r in old_results)
+
+

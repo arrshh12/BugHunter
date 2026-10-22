@@ -679,6 +679,7 @@ class Database:
             if rule_id:
                 query += " WHERE rule_id = ?"
                 params.append(rule_id)
+            query += " ORDER BY id DESC LIMIT 500"
 
             rows = conn.execute(query, tuple(params)).fetchall()
             matches = []

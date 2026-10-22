@@ -185,6 +185,11 @@ class Verifier:
                     modified = ["primary_fix.py"]
         else:
             try:
+                # Stage untracked files with intent-to-add so git diff HEAD captures new reproducers & modules
+                subprocess.run(
+                    ["git", "add", "-N", "."],
+                    cwd=repo_path, capture_output=True, text=True, check=True
+                )
                 p_diff = subprocess.run(
                     ["git", "diff", "HEAD"],
                     cwd=repo_path, capture_output=True, text=True, check=True

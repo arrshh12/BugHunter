@@ -421,4 +421,96 @@ def test_verifier_edge_cases_additions_deletions_modifications(tmp_path: Path, v
     assert res_ctx.diff_lines == 150
 
 
+def test_verifier_captures_untracked_files_diff_and_lines(tmp_path: Path, verifier):
+    """Verify git add -N . includes newly created untracked files in diff_lines and modified_files."""
+    import subprocess
+    repo = tmp_path / "repo_untracked"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo, check=True, capture_output=True)
+    (repo / "base.py").write_text("print('base')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "base.py"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Create new untracked reproducer test file
+    (repo / "tests").mkdir(parents=True, exist_ok=True)
+    (repo / "tests" / "test_repro.py").write_text("def test_bug():\n    assert True\n", encoding="utf-8")
+
+    report = {"bug_found": True, "pr_title": "fix: add repro test"}
+    res = verifier.verify_and_sanitize_fix(repo_path=repo, skip_files=[], simulated_report=report)
+
+    assert res.verified is True
+    assert any("test_repro.py" in f for f in res.modified_files)
+    assert res.diff_lines >= 2
+
+
+def test_verifier_catches_secret_leaks_in_untracked_files(tmp_path: Path, verifier):
+    """Verify secrets inside newly created untracked files are detected and rejected."""
+    import subprocess
+    repo = tmp_path / "repo_untracked_secret"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo, check=True, capture_output=True)
+    (repo / "base.py").write_text("print('base')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "base.py"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Untracked file containing leaked token
+    (repo / "test_leak.py").write_text('TOKEN = "ghp_111122223333444455556666777788889999"\n', encoding="utf-8")
+
+    report = {"bug_found": True, "pr_title": "fix: test with secret"}
+    res = verifier.verify_and_sanitize_fix(repo_path=repo, skip_files=[], simulated_report=report)
+
+    assert res.verified is False
+    assert "credential leak" in res.error_reason.lower()
+
+
+def test_verifier_enforces_line_bounds_on_untracked_files(tmp_path: Path, verifier):
+    """Verify untracked files exceeding 150 lines are rejected."""
+    import subprocess
+    repo = tmp_path / "repo_untracked_limit"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo, check=True, capture_output=True)
+    (repo / "base.py").write_text("print('base')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "base.py"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Create 155-line untracked file
+    (repo / "large_module.py").write_text("\n".join(["x = 1"] * 155) + "\n", encoding="utf-8")
+
+    report = {"bug_found": True, "pr_title": "fix: large module"}
+    res = verifier.verify_and_sanitize_fix(repo_path=repo, skip_files=[], max_lines=150, simulated_report=report)
+
+    assert res.verified is False
+    assert "exceeding limit of 150" in res.error_reason
+    assert res.diff_lines == 155
+
+
+def test_verifier_untracked_within_exact_150_lines_allowed(tmp_path: Path, verifier):
+    """Verify untracked file with exactly 150 lines passes verification."""
+    import subprocess
+    repo = tmp_path / "repo_untracked_150"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo, check=True, capture_output=True)
+    (repo / "base.py").write_text("print('base')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "base.py"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Create 150-line untracked file
+    (repo / "allowed_module.py").write_text("\n".join(["x = 1"] * 150) + "\n", encoding="utf-8")
+
+    report = {"bug_found": True, "pr_title": "fix: exact 150 lines"}
+    res = verifier.verify_and_sanitize_fix(repo_path=repo, skip_files=[], max_lines=150, simulated_report=report)
+
+    assert res.verified is True
+    assert res.diff_lines == 150
+
+
+
 

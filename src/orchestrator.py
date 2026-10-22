@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -48,6 +49,7 @@ class Orchestrator:
         self.paused: bool = False
         self.stop_requested: bool = False
         self.force_queue: list[str] = []
+        self._force_queue_lock = threading.Lock()
 
     def toggle_pause(self) -> bool:
         """Toggle pause flag for autonomous scanning cycle."""
@@ -58,9 +60,10 @@ class Orchestrator:
 
     def queue_force_scan(self, repo_slug: str) -> None:
         """Enqueue high-priority scan for specified repository."""
-        if repo_slug not in self.force_queue:
-            self.force_queue.append(repo_slug)
-            self.logger.log("INFO", f"Enqueued force scan for {repo_slug}")
+        with self._force_queue_lock:
+            if repo_slug not in self.force_queue:
+                self.force_queue.append(repo_slug)
+                self.logger.log("INFO", f"Enqueued force scan for {repo_slug}")
 
     def scan_single_repo(
         self,
@@ -199,8 +202,12 @@ class Orchestrator:
             self.db.add_scan_log(repo_slug, head_sha, None, "NO_HEALTHY_KEYS", time.time() - start_time)
             return {"outcome": "NO_HEALTHY_KEYS", "repo_slug": repo_slug}
 
-        # Assemble prompt with Layer 2 Structural Graph Context
-        task_prompt_path = Path("prompts/task_prompt.txt")
+        # Assemble prompt with Layer 2 Structural Graph Context (resolved relative to __file__)
+        project_root = Path(__file__).resolve().parent.parent
+        resolved_task_prompt = project_root / "prompts" / "task_prompt.txt"
+        if not resolved_task_prompt.exists():
+            resolved_task_prompt = Path("prompts/task_prompt.txt").resolve()
+        task_prompt_path = resolved_task_prompt
         prompt_override_file: Optional[Path] = None
 
         if top_finding and top_finding.get("file"):
@@ -334,6 +341,22 @@ class Orchestrator:
         except TypeError:
             branch_name = self.git_manager.create_atomic_branch(repo_path, prefix="auto")
 
+        # Determine whether to push to fork or origin
+        remote_target = "origin"
+        head_spec = branch_name
+        has_fork_remote = False
+        try:
+            p_fork = subprocess.run(["git", "remote", "get-url", "fork"], cwd=repo_path, capture_output=True, text=True, check=False)
+            has_fork_remote = (p_fork.returncode == 0 and bool(p_fork.stdout.strip()))
+        except Exception:
+            has_fork_remote = False
+
+        if has_fork_remote:
+            remote_target = "fork"
+            auth_user = self.git_manager.get_authenticated_user()
+            if auth_user:
+                head_spec = f"{auth_user}:{branch_name}"
+
         # Stage and commit
         try:
             if custom_diff:
@@ -350,7 +373,7 @@ class Orchestrator:
 
             subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
             commit_res = subprocess.run(["git", "commit", "-m", ver_res.pr_title], cwd=repo_path, check=True, capture_output=True)
-            self.git_manager.push_atomic_branch(repo_path, branch_name)
+            self.git_manager.push_atomic_branch(repo_path, branch_name, remote=remote_target)
         except Exception as e:
             self.logger.log("ERROR", f"Git commit/push failed: {e}")
             self.git_manager.rollback_working_tree(repo_path, default_branch)
@@ -367,7 +390,7 @@ class Orchestrator:
                     [
                         "gh", "pr", "create",
                         "--repo", repo_slug,
-                        "--head", branch_name,
+                        "--head", head_spec,
                         "--base", default_branch,
                         "--title", ver_res.pr_title,
                         "--body", ver_res.pr_body
@@ -439,8 +462,11 @@ class Orchestrator:
         results = []
 
         # Process force queue first
-        while self.force_queue:
-            repo_slug = self.force_queue.pop(0)
+        while True:
+            with self._force_queue_lock:
+                if not self.force_queue:
+                    break
+                repo_slug = self.force_queue.pop(0)
             res = self.scan_single_repo(repo_slug, is_force_scan=True)
             results.append(res)
 

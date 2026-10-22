@@ -104,7 +104,10 @@ def main():
     ring_logger.log("INFO", "Starting 24/7 continuous autonomous scanning cycle...")
     try:
         while not orchestrator.stop_requested:
-            orchestrator.run_cycle()
+            try:
+                orchestrator.run_cycle()
+            except Exception as e:
+                ring_logger.log("ERROR", f"Unhandled exception in daemon scan cycle: {e}")
             time.sleep(config.scan_cooldown_seconds)
     except KeyboardInterrupt:
         shutdown_handler(None, None)

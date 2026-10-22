@@ -232,17 +232,8 @@ def setup_logger(
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # 3. Rotating file handler (10MB x 5 backups)
-    if log_file:
-        file_path = Path(log_file).resolve()
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        rot_handler = RotatingFileHandler(
-            str(file_path),
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8"
-        )
-        rot_handler.setFormatter(formatter)
-        logger.addHandler(rot_handler)
+    # 3. Rotating file handler: reuse ring_logger._file_handler to prevent duplicate file locks on Windows
+    if ring_logger._file_handler:
+        logger.addHandler(ring_logger._file_handler)
 
     return logger, ring_logger, ws_broadcaster

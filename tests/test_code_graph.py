@@ -227,3 +227,39 @@ def test_cognee_adapter_routing_and_fallback(sample_repo: Path):
             engine_cognee.build_graph()
             ctx = engine_cognee.get_localized_context("src/engine.py")
             assert "tests/test_engine.py" in ctx.related_tests
+
+
+def test_relative_import_resolution_no_empty_target(tmp_path: Path):
+    """Verify relative imports from . and .. resolve without empty target edges."""
+    repo = tmp_path / "repo"
+    pkg = repo / "pkg"
+    sub = pkg / "sub"
+    sub.mkdir(parents=True)
+
+    (pkg / "sibling.py").write_text("def sibling_func(): pass\n", encoding="utf-8")
+    (sub / "child.py").write_text(
+        "from . import sub_sibling\n"
+        "from .. import sibling\n"
+        "from ..sibling import sibling_func\n",
+        encoding="utf-8"
+    )
+    (sub / "sub_sibling.py").write_text("def sub_func(): pass\n", encoding="utf-8")
+    (repo / "root_mod.py").write_text("from . import pkg\n", encoding="utf-8")
+
+    engine = NativeAstGraphEngine(repo)
+    engine.build_graph()
+
+    import_edges = [e for e in engine.edges if e.edge_type == "IMPORTS" and e.source == "pkg/sub/child.py"]
+    assert len(import_edges) >= 3
+
+    # Verify no empty targets
+    targets = [e.target for e in import_edges]
+    assert "" not in targets
+    assert "pkg.sub.sub_sibling" in targets
+    assert "pkg.sibling" in targets
+
+    root_edges = [e for e in engine.edges if e.edge_type == "IMPORTS" and e.source == "root_mod.py"]
+    assert len(root_edges) >= 1
+    assert all(e.target != "" for e in root_edges)
+    assert any(e.target == "pkg" for e in root_edges)
+

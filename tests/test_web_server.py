@@ -298,3 +298,65 @@ def test_web_server_websocket_origin_validation(test_app):
             pass
     assert exc_info2.value.code == 1008
 
+
+def test_websocket_origin_matches_host_header(test_app):
+    """Verify WebSocket /ws/logs accepts Origin matching client Host header."""
+    client, _, _ = test_app
+    with client.websocket_connect(
+        "/ws/logs",
+        headers={"Host": "bughunter.internal:8080", "Origin": "http://bughunter.internal:8080"}
+    ) as ws:
+        msg = ws.receive_text()
+        assert len(msg) > 0
+
+
+def test_websocket_origin_allowed_origins_env(test_app, monkeypatch):
+    """Verify WebSocket /ws/logs accepts Origin configured via ALLOWED_ORIGINS env var."""
+    client, _, _ = test_app
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://dashboard.corp.net, http://remote-dev:3000")
+
+    with client.websocket_connect(
+        "/ws/logs",
+        headers={"Origin": "https://dashboard.corp.net"}
+    ) as ws:
+        msg = ws.receive_text()
+        assert len(msg) > 0
+
+    with client.websocket_connect(
+        "/ws/logs",
+        headers={"Origin": "http://remote-dev:3000"}
+    ) as ws:
+        msg = ws.receive_text()
+        assert len(msg) > 0
+
+    # Malicious origin not in ALLOWED_ORIGINS and not matching Host is rejected
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/logs", headers={"Origin": "http://evil-corp.com"}):
+            pass
+    assert exc_info.value.code == 1008
+
+
+def test_websocket_origin_allowed_origins_collection(test_app, monkeypatch):
+    """Verify WebSocket /ws/logs supports list/set/tuple for allowed origins."""
+    client, orch, _ = test_app
+    # Set allowed_origins directly on orchestrator config as list
+    orch.config.allowed_origins = ["https://app1.internal", "https://app2.internal"]
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+
+    with client.websocket_connect(
+        "/ws/logs",
+        headers={"Origin": "https://app1.internal"}
+    ) as ws:
+        msg = ws.receive_text()
+        assert len(msg) > 0
+
+    # Set as set
+    orch.config.allowed_origins = {"https://set-origin.io"}
+    with client.websocket_connect(
+        "/ws/logs",
+        headers={"Origin": "https://set-origin.io"}
+    ) as ws:
+        msg = ws.receive_text()
+        assert len(msg) > 0
+
+

@@ -189,3 +189,64 @@ def test_git_manager_exception_scrubbing(tmp_path: Path):
     assert "[REDACTED]" in scrubbed
     assert "http.https://github.com/.extraHeader=[REDACTED]" in scrubbed
 
+
+def test_push_atomic_branch_raises_when_remote_configured(tmp_path: Path):
+    """Verify push_atomic_branch re-raises CalledProcessError with scrubbed credentials when origin remote is configured."""
+    from unittest.mock import patch
+
+    token = "ghp_SecretToken12345678901234567890123456"
+    gm = GitManager(workspace_dir=tmp_path, github_token=token)
+    repo_dir = tmp_path / "repos" / "test_repo"
+    repo_dir.mkdir(parents=True)
+
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo_dir, check=True, capture_output=True)
+    (repo_dir / "README.md").write_text("test", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+    branch = gm.create_atomic_branch(repo_dir)
+
+    # Configure mock origin remote
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/fake/repo.git"], cwd=repo_dir, check=True, capture_output=True)
+
+    real_run = subprocess.run
+    push_err = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["git", "push", "origin", branch],
+        stderr=f"fatal: remote rejected with token {token}"
+    )
+
+    def mock_push(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) > 1 and "push" in cmd:
+            raise push_err
+        return real_run(cmd, *args, **kwargs)
+
+    with patch("subprocess.run", side_effect=mock_push):
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
+            gm.push_atomic_branch(repo_dir, branch)
+
+        assert token not in str(exc_info.value.stderr)
+        assert "[REDACTED]" in str(exc_info.value.stderr)
+
+
+def test_push_atomic_branch_swallows_when_remote_unconfigured(tmp_path: Path):
+    """Verify push_atomic_branch swallows errors when no origin remote exists (backward compatibility)."""
+    token = "ghp_SecretToken12345678901234567890123456"
+    gm = GitManager(workspace_dir=tmp_path, github_token=token)
+    repo_dir = tmp_path / "repos" / "test_local_only"
+    repo_dir.mkdir(parents=True)
+
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo_dir, check=True, capture_output=True)
+    (repo_dir / "README.md").write_text("test", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+    branch = gm.create_atomic_branch(repo_dir)
+
+    # Note: NO remote origin is added.
+    # Push attempt will fail because 'origin' doesn't exist, but it should be swallowed.
+    gm.push_atomic_branch(repo_dir, branch)
+
+
