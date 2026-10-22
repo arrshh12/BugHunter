@@ -398,6 +398,7 @@ class Orchestrator:
                     cwd=repo_path,
                     capture_output=True,
                     text=True,
+                    env=self.git_manager._gh_env(),
                     timeout=60,
                     check=True
                 )

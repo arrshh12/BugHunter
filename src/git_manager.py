@@ -69,6 +69,14 @@ class GitManager:
         scrubbed = re.sub(r"http\.extraHeader=[^\s'\"]+", "http.extraHeader=[REDACTED]", scrubbed)
         return scrubbed
 
+    def _gh_env(self) -> dict[str, str]:
+        """Construct environment with explicit GitHub authentication for gh CLI calls."""
+        env = os.environ.copy()
+        if self.github_token:
+            env["GH_TOKEN"] = self.github_token
+            env["GITHUB_TOKEN"] = self.github_token
+        return env
+
     def configure_git_and_gh(self) -> None:
         """Configure global git bot identity and authenticate GitHub CLI."""
         try:
@@ -85,6 +93,7 @@ class GitManager:
                     text=True,
                     check=False,
                     capture_output=True,
+                    env=self._gh_env(),
                     timeout=30
                 )
             except Exception:
@@ -102,6 +111,7 @@ class GitManager:
                     ["gh", "api", "user", "--jq", ".login"],
                     capture_output=True,
                     text=True,
+                    env=self._gh_env(),
                     timeout=15,
                     check=True
                 )
@@ -125,6 +135,7 @@ class GitManager:
                     ["gh", "api", f"repos/{repo_slug}", "--jq", ".permissions.push"],
                     capture_output=True,
                     text=True,
+                    env=self._gh_env(),
                     timeout=15,
                     check=False
                 )
@@ -153,6 +164,7 @@ class GitManager:
                     ["gh", "api", f"repos/{fork_slug}", "--jq", ".full_name"],
                     capture_output=True,
                     text=True,
+                    env=self._gh_env(),
                     timeout=15,
                     check=False
                 )
@@ -167,6 +179,7 @@ class GitManager:
                     ["gh", "repo", "fork", repo_slug, "--clone=false"],
                     capture_output=True,
                     text=True,
+                    env=self._gh_env(),
                     timeout=30,
                     check=False
                 )
@@ -195,6 +208,7 @@ class GitManager:
                     ["gh", "repo", "list", "--limit", "100", "--json", "nameWithOwner,isFork,isArchived"],
                     capture_output=True,
                     text=True,
+                    env=self._gh_env(),
                     timeout=30,
                     check=True
                 )
@@ -342,6 +356,7 @@ class GitManager:
                     ],
                     capture_output=True,
                     text=True,
+                    env=self._gh_env(),
                     timeout=30,
                     check=True
                 )
