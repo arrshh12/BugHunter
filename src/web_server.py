@@ -9,7 +9,7 @@ import hmac
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
