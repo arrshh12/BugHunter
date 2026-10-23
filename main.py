@@ -7,7 +7,6 @@ or executes a one-shot cloud scan cycle (--once) for GitHub Actions.
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import signal
 import sys
