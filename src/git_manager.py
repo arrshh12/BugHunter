@@ -38,12 +38,13 @@ class GitManager:
 
     TEMPORARY_FILES = [".skip_files.txt", ".static_findings.json", ".bug_fix_report.json"]
 
-    def __init__(self, workspace_dir: Path | str, github_token: str = "", max_open_prs: int = 5):
+    def __init__(self, workspace_dir: Path | str, github_token: str = "", max_open_prs: int = 7, state_repo: str = ""):
         self.workspace_dir = Path(workspace_dir).resolve()
         self.repos_dir = self.workspace_dir / "repos"
         self.repos_dir.mkdir(parents=True, exist_ok=True)
         self.github_token = github_token
         self.max_open_prs = max_open_prs
+        self.state_repo = state_repo
 
     def _scrub_credentials(self, text: str) -> str:
         """Scrub tokens and auth headers from exception messages and command strings."""
@@ -189,11 +190,100 @@ class GitManager:
                 pass
         return None
 
-    def discover_or_load_repos(self, target_repos_str: str, auto_discover: bool = False) -> list[str]:
-        """Load target repositories from string or discover active repos via GitHub CLI."""
+    DEFAULT_CURATED_REPOS = [
+        "bitxwolf/Airllm-tui",
+        "bitxwolf/orb",
+        "bitxwolf/worldof3js",
+        "bitxwolf/medical-for-non-medics",
+        "bitxwolf/BugHunter",
+    ]
+
+    @staticmethod
+    def curate_catalog(
+        repos: list[dict[str, Any]],
+        state_repo: str = "bitxwolf/bughunter-state",
+        cutoff_date: str = "2026-10-23",
+    ) -> list[str]:
+        """
+        Curate repository catalog according to priority and cutoff rules:
+        1. airllm-tui (bitxwolf/Airllm-tui)
+        2. orb (bitxwolf/orb)
+        3. world of 3js (bitxwolf/worldof3js)
+        4. medical-for-non-medics (bitxwolf/medical-for-non-medics)
+        5. Any non-fork, non-archived repo created on/after cutoff_date (2026-10-23),
+           excluding state_repo and bughunter itself.
+        6. bughunter itself (bitxwolf/BugHunter) as last priority.
+        All other older repositories are filtered out.
+        """
+        p1: list[str] = []
+        p2: list[str] = []
+        p3: list[str] = []
+        p4: list[str] = []
+        p5: list[tuple[str, str]] = []  # (created_at, slug)
+        p6: list[str] = []
+
+        clean_state_repo = (state_repo or "").strip().lower()
+
+        for r in repos:
+            if isinstance(r, str):
+                slug = r.strip()
+                name = slug.split("/")[1] if "/" in slug else slug
+                created_at = ""
+                is_fork = False
+                is_archived = False
+            elif isinstance(r, dict):
+                slug = str(r.get("nameWithOwner") or "").strip()
+                name = str(r.get("name") or (slug.split("/")[1] if "/" in slug else slug)).strip()
+                created_at = str(r.get("createdAt") or "")
+                is_fork = bool(r.get("isFork", False))
+                is_archived = bool(r.get("isArchived", False))
+            else:
+                continue
+
+            if not slug or is_fork or is_archived:
+                continue
+
+            name_clean = name.lower()
+            slug_lower = slug.lower()
+
+            # Skip state repo
+            if "bughunter-state" in name_clean or (clean_state_repo and slug_lower == clean_state_repo):
+                continue
+
+            if name_clean in ("airllm-tui", "airllm_tui", "airllmtui"):
+                p1.append(slug)
+            elif name_clean == "orb":
+                p2.append(slug)
+            elif name_clean.replace("-", "").replace("_", "").replace(" ", "") == "worldof3js":
+                p3.append(slug)
+            elif name_clean in ("medical-for-non-medics", "medical_for_non_medics", "medicalfornonmedics"):
+                p4.append(slug)
+            elif name_clean in ("bughunter", "autobughunter"):
+                p6.append(slug)
+            elif cutoff_date and created_at and created_at[:10] >= cutoff_date[:10]:
+                p5.append((created_at, slug))
+
+        p5_sorted = [s for _, s in sorted(p5, key=lambda x: x[0])]
+        combined = p1 + p2 + p3 + p4 + p5_sorted + p6
+        seen = set()
+        deduped: list[str] = []
+        for s in combined:
+            s_lower = s.lower()
+            if s_lower not in seen:
+                seen.add(s_lower)
+                deduped.append(s)
+        return deduped
+
+    def discover_or_load_repos(
+        self,
+        target_repos_str: str = "",
+        auto_discover: bool = False,
+        cutoff_date: str = "2026-10-23",
+    ) -> list[str]:
+        """Load target repositories from string or discover active repos via GitHub CLI with priority catalog curation."""
         if not auto_discover:
             if not target_repos_str:
-                return []
+                return list(self.DEFAULT_CURATED_REPOS)
             repos = []
             for item in target_repos_str.replace("\n", ",").split(","):
                 slug = item.strip()
@@ -201,11 +291,11 @@ class GitManager:
                     repos.append(slug)
             return repos
 
-        # Auto-discover non-fork, non-archived repositories via gh CLI
+        # Auto-discover and curate via gh CLI
         if shutil.which("gh"):
             try:
                 res = subprocess.run(
-                    ["gh", "repo", "list", "--limit", "100", "--json", "nameWithOwner,isFork,isArchived"],
+                    ["gh", "repo", "list", "--limit", "100", "--json", "nameWithOwner,name,isFork,isArchived,createdAt"],
                     capture_output=True,
                     text=True,
                     env=self._gh_env(),
@@ -213,18 +303,21 @@ class GitManager:
                     check=True
                 )
                 data = json.loads(res.stdout)
-                discovered = [
-                    item["nameWithOwner"]
-                    for item in data
-                    if not item.get("isFork", False) and not item.get("isArchived", False)
-                ]
-                if discovered:
-                    return discovered[:20]
+                curated = self.curate_catalog(
+                    data,
+                    state_repo=getattr(self, "state_repo", "bitxwolf/bughunter-state"),
+                    cutoff_date=cutoff_date,
+                )
+                if curated:
+                    return curated
             except Exception:
                 pass
 
-        # Fallback to target_repos_str if gh fails
-        return [r.strip() for r in target_repos_str.replace("\n", ",").split(",") if r.strip()][:20]
+        # Fallback to target_repos_str or curated default
+        fallback = [r.strip() for r in target_repos_str.replace("\n", ",").split(",") if r.strip()]
+        if fallback:
+            return fallback
+        return list(self.DEFAULT_CURATED_REPOS)
 
     def sync_repository(self, repo_slug: str, existing_path: Optional[Path] = None, allow_init: Optional[bool] = None) -> tuple[Path, str, str]:
         """Hard-reset sync working tree to origin default branch, returning (repo_path, default_branch, head_sha)."""

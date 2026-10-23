@@ -275,3 +275,100 @@ def test_push_atomic_branch_swallows_when_remote_unconfigured(tmp_path: Path):
     gm.push_atomic_branch(repo_dir, branch)
 
 
+def test_curate_catalog_priorities_and_cutoff():
+    """Verify curate_catalog enforces:
+    1. airllm-tui
+    2. orb
+    3. world of 3js
+    4. medical-for-non-medics
+    5. New repos created on/after 2026-10-23
+    6. bughunter itself (last priority)
+    Excludes forks, archived repos, state repo, and older repos.
+    """
+    raw_repos = [
+        {"nameWithOwner": "bitxwolf/bughunter-state", "name": "bughunter-state", "isFork": False, "isArchived": False, "createdAt": "2026-10-23T16:10:08Z"},
+        {"nameWithOwner": "bitxwolf/airi", "name": "airi", "isFork": True, "isArchived": False, "createdAt": "2026-08-14T22:18:39Z"},
+        {"nameWithOwner": "bitxwolf/Questioneer-", "name": "Questioneer-", "isFork": False, "isArchived": False, "createdAt": "2025-12-02T13:30:03Z"},
+        {"nameWithOwner": "bitxwolf/BugHunter", "name": "BugHunter", "isFork": False, "isArchived": False, "createdAt": "2026-10-22T19:21:22Z"},
+        {"nameWithOwner": "bitxwolf/medical-for-non-medics", "name": "medical-for-non-medics", "isFork": False, "isArchived": False, "createdAt": "2026-10-15T09:36:06Z"},
+        {"nameWithOwner": "bitxwolf/worldof3js", "name": "worldof3js", "isFork": False, "isArchived": False, "createdAt": "2026-09-24T20:45:29Z"},
+        {"nameWithOwner": "bitxwolf/orb", "name": "orb", "isFork": False, "isArchived": False, "createdAt": "2026-07-08T17:50:06Z"},
+        {"nameWithOwner": "bitxwolf/Airllm-tui", "name": "Airllm-tui", "isFork": False, "isArchived": False, "createdAt": "2026-07-06T18:52:33Z"},
+        {"nameWithOwner": "bitxwolf/new-future-project", "name": "new-future-project", "isFork": False, "isArchived": False, "createdAt": "2026-10-24T12:00:00Z"},
+        {"nameWithOwner": "bitxwolf/archived-proj", "name": "archived-proj", "isFork": False, "isArchived": True, "createdAt": "2026-10-25T12:00:00Z"},
+    ]
+
+    curated = GitManager.curate_catalog(raw_repos, state_repo="bitxwolf/bughunter-state", cutoff_date="2026-10-23")
+
+    assert curated == [
+        "bitxwolf/Airllm-tui",           # Priority 1
+        "bitxwolf/orb",                  # Priority 2
+        "bitxwolf/worldof3js",           # Priority 3
+        "bitxwolf/medical-for-non-medics", # Priority 4
+        "bitxwolf/new-future-project",   # Priority 5 (created >= 2026-10-23)
+        "bitxwolf/BugHunter",            # Priority 6 (last priority)
+    ]
+    # Questioneer- (older than cutoff) must be excluded
+    assert "bitxwolf/Questioneer-" not in curated
+    # airi (fork) must be excluded
+    assert "bitxwolf/airi" not in curated
+    # bughunter-state must be excluded
+    assert "bitxwolf/bughunter-state" not in curated
+    # archived-proj must be excluded
+    assert "bitxwolf/archived-proj" not in curated
+
+
+def test_discover_or_load_repos_fallback_and_custom(tmp_path: Path):
+    """Verify discover_or_load_repos fallback returns curated defaults and accepts custom target strings."""
+    gm = GitManager(workspace_dir=tmp_path, max_open_prs=7)
+
+    # Empty string with auto_discover=False returns curated defaults
+    default_repos = gm.discover_or_load_repos("", auto_discover=False)
+    assert default_repos == GitManager.DEFAULT_CURATED_REPOS
+    assert default_repos[0] == "bitxwolf/Airllm-tui"
+    assert default_repos[-1] == "bitxwolf/BugHunter"
+
+    # Custom string returns parsed list
+    custom = gm.discover_or_load_repos("user/repo1, user/repo2", auto_discover=False)
+    assert custom == ["user/repo1", "user/repo2"]
+
+
+def test_curate_catalog_with_string_inputs_and_duplicates():
+    """Verify curate_catalog handles string lists and deduplicates entries while preserving order."""
+    items = [
+        "bitxwolf/BugHunter",
+        "bitxwolf/orb",
+        "bitxwolf/Airllm-tui",
+        "bitxwolf/orb",  # duplicate
+        "bitxwolf/worldof3js",
+        "bitxwolf/medical-for-non-medics",
+        "bitxwolf/bughunter-state",  # state repo to exclude
+    ]
+    curated = GitManager.curate_catalog(items, state_repo="bitxwolf/bughunter-state")
+    assert curated == [
+        "bitxwolf/Airllm-tui",
+        "bitxwolf/orb",
+        "bitxwolf/worldof3js",
+        "bitxwolf/medical-for-non-medics",
+        "bitxwolf/BugHunter",
+    ]
+
+
+def test_curate_catalog_multiple_new_repos_sorted_by_date():
+    """Verify newly created repos are chronologically sorted and placed before bughunter."""
+    repos = [
+        {"nameWithOwner": "bitxwolf/BugHunter", "createdAt": "2026-10-22T00:00:00Z"},
+        {"nameWithOwner": "bitxwolf/brand-new-b", "createdAt": "2026-10-25T14:00:00Z"},
+        {"nameWithOwner": "bitxwolf/brand-new-a", "createdAt": "2026-10-24T10:00:00Z"},
+        {"nameWithOwner": "bitxwolf/Airllm-tui", "createdAt": "2026-07-06T00:00:00Z"},
+    ]
+    curated = GitManager.curate_catalog(repos, cutoff_date="2026-10-23")
+    assert curated == [
+        "bitxwolf/Airllm-tui",
+        "bitxwolf/brand-new-a",
+        "bitxwolf/brand-new-b",
+        "bitxwolf/BugHunter",
+    ]
+
+
+

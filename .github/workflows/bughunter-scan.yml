@@ -1,0 +1,109 @@
+name: AutoBugHunter Scheduled Cloud Runner
+
+on:
+  schedule:
+    # Hourly automated scan cycle
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Specific repository to scan (optional, defaults to prioritized catalog)'
+        required: false
+        default: ''
+      max_cycles:
+        description: 'Maximum scan cycles per run (default: 7 to fill PR window)'
+        required: false
+        default: '7'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bughunter-scan
+  cancel-in-progress: false
+
+jobs:
+  cloud-scan:
+    name: Autonomous Bug Hunt & State Sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      GH_TOKEN: ${{ secrets.AUTO_BUGHUNTER_TOKEN || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.AUTO_BUGHUNTER_TOKEN || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+      STATE_REPO: bitxwolf/bughunter-state
+      WORKSPACE_DIR: ${{ github.workspace }}/workspace
+      STATE_DIR: ${{ github.workspace }}/workspace/state
+      REPOS_DIR: ${{ github.workspace }}/workspace/repos
+      DB_PATH: ${{ github.workspace }}/workspace/state/bughunter.sqlite
+      LOG_FILE_PATH: ${{ github.workspace }}/bughunter.log
+
+    steps:
+      - name: Checkout AutoBugHunter Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Configure Git Bot Identity
+        run: |
+          git config --global user.name "AutoBugHunter[bot]"
+          git config --global user.email "autobughunter[bot]@users.noreply.github.com"
+          git config --global init.defaultBranch main
+
+      - name: Verify GitHub CLI Authentication
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            gh auth status
+          else
+            echo "::warning::No GitHub Token found in secrets."
+          fi
+
+      - name: Run AutoBugHunter Cloud Scan Cycle
+        env:
+          LLM_KEYS_POOL: ${{ secrets.LLM_KEYS_POOL }}
+          AUTO_DISCOVER_REPOS: 'true'
+          MAX_OPEN_PRS_PER_REPO: '7'
+          MAX_CYCLES: ${{ github.event.inputs.max_cycles || '7' }}
+          TARGET_REPO: ${{ github.event.inputs.target_repo || '' }}
+          RUN_ONCE: 'true'
+        run: |
+          python main.py --once
+
+      - name: Generate Workflow Step Summary
+        if: always()
+        run: |
+          echo "### 🐞 AutoBugHunter Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max PR Window**: 7 PRs per repository" >> $GITHUB_STEP_SUMMARY
+          echo "- **Persistent State Repo**: \`bitxwolf/bughunter-state\`" >> $GITHUB_STEP_SUMMARY
+          LOG_FILE=""
+          if [ -f "$GITHUB_WORKSPACE/bughunter.log" ]; then
+            LOG_FILE="$GITHUB_WORKSPACE/bughunter.log"
+          elif [ -f "$GITHUB_WORKSPACE/workspace/state/bughunter.log" ]; then
+            LOG_FILE="$GITHUB_WORKSPACE/workspace/state/bughunter.log"
+          fi
+          if [ -n "$LOG_FILE" ]; then
+            echo "<details><summary>Recent Execution Logs (last 50 lines)</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 50 "$LOG_FILE" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Ensure State Snapshot Push
+        if: always()
+        run: |
+          python main.py --backup-state

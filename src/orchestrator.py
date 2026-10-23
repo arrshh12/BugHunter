@@ -449,7 +449,7 @@ class Orchestrator:
 
             self.key_manager.report_key_success(key.id)
             self.db.update_repository_status(repo_slug, "IDLE")
-            self.db.record_scan_result(repo_slug, head_sha, fully_exhausted=1)
+            self.db.record_scan_result(repo_slug, head_sha, fully_exhausted=0)
             self.db.add_scan_log(repo_slug, head_sha, key.id, "PR_CREATED", time.time() - start_time, pr_url)
             self.logger.log("PR CREATED", f"Pull request #{pr_number} created on {repo_slug}: {pr_url}")
 

@@ -39,7 +39,7 @@ class Config:
     target_repos: list[str] = field(default_factory=list)
     auto_discover_repos: bool = False
     llm_keys: list[KeyConfig] = field(default_factory=list)
-    max_open_prs_per_repo: int = 5
+    max_open_prs_per_repo: int = 7
     max_files_per_pr: int = 3
     max_diff_lines: int = 150
     scan_cooldown_seconds: int = 60
@@ -50,6 +50,7 @@ class Config:
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8080
     dashboard_api_key: str = ""
+    state_repo: str = ""
     openhands_runtime: str = "process"
     workspace_dir: Path = field(default_factory=Path.cwd)
     repos_dir: Path = field(default_factory=lambda: Path.cwd() / "repos")
@@ -208,6 +209,7 @@ class Config:
         else:
             target_repos = [r.strip() for r in str(target_repos_val).split(",") if r.strip()]
 
+
         # Booleans
         auto_discover_val = get_val("AUTO_DISCOVER_REPOS", False)
         if isinstance(auto_discover_val, str):
@@ -220,7 +222,7 @@ class Config:
             target_repos=target_repos,
             auto_discover_repos=auto_discover,
             llm_keys=parsed_keys,
-            max_open_prs_per_repo=int(get_val("MAX_OPEN_PRS_PER_REPO", 5)),
+            max_open_prs_per_repo=int(get_val("MAX_OPEN_PRS_PER_REPO", 7)),
             max_files_per_pr=int(get_val("MAX_FILES_PER_PR", 3)),
             max_diff_lines=int(get_val("MAX_DIFF_LINES", 150)),
             scan_cooldown_seconds=int(get_val("SCAN_COOLDOWN_SECONDS", 60)),
@@ -228,9 +230,10 @@ class Config:
             static_scan_timeout_seconds=int(get_val("STATIC_SCAN_TIMEOUT_SECONDS", 90)),
             git_timeout_seconds=int(get_val("GIT_TIMEOUT_SECONDS", 120)),
             preflight_timeout_seconds=int(get_val("PREFLIGHT_TIMEOUT_SECONDS", 5)),
-            dashboard_host=str(get_val("DASHBOARD_HOST", "127.0.0.1")),
-            dashboard_port=int(get_val("DASHBOARD_PORT", 8080)),
+            dashboard_host=str(get_val("DASHBOARD_HOST", "0.0.0.0" if (os.getenv("SPACE_ID") or os.getenv("PORT")) else "127.0.0.1")),
+            dashboard_port=int(get_val("DASHBOARD_PORT", get_val("PORT", 8080))),
             dashboard_api_key=str(get_val("DASHBOARD_API_KEY", "")),
+            state_repo=str(get_val("STATE_REPO", "")).strip(),
             openhands_runtime=str(get_val("OPENHANDS_RUNTIME", get_val("RUNTIME", "process"))),
             workspace_dir=workspace_dir,
             repos_dir=repos_dir,

@@ -1,12 +1,17 @@
 # AutoBugHunter 24/7 Container Packaging
-# Multi-Arch ARM64 / AMD64 deployment image for Oracle Cloud Free Tier Ampere A1
+# Multi-Arch ARM64 / AMD64 deployment image compatible with Hugging Face Spaces & Cloud VMs
 FROM python:3.12-slim-bookworm
 
-# Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PORT=7860
+ENV DASHBOARD_PORT=7860
+ENV DASHBOARD_HOST=0.0.0.0
+ENV WORKSPACE_DIR=/workspace
+ENV STATE_DIR=/workspace/state
+ENV REPOS_DIR=/workspace/repos
 
-# Install base toolchain: Git, curl, build essentials, and GitHub CLI
+# 1. Install base toolchain: Git, curl, build essentials, and GitHub CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -22,22 +27,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# 2. Setup non-root user (UID 1000) for Hugging Face Spaces
+RUN useradd -m -u 1000 user
 WORKDIR /app
 
-# Copy dependency specifications and install Python packages
+# 3. Copy dependency specifications and install Python packages
 COPY requirements.txt pyproject.toml /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source tree and assets
+# 4. Copy source tree and assets
 COPY src/ /app/src/
 COPY prompts/ /app/prompts/
 COPY scripts/ /app/scripts/
 COPY main.py /app/main.py
 
-# Create persistent state and workspace directories
-RUN mkdir -p /workspace/state /workspace/repos
+# 5. Create persistent state and workspace directories and set ownership for user 1000
+RUN mkdir -p /workspace/state /workspace/repos \
+    && chown -R user:user /app /workspace
 
-# Expose Mission Control dashboard port
-EXPOSE 8080
+# 6. Configure git bot identity for non-root user
+USER user
+RUN git config --global user.name "AutoBugHunter[bot]" \
+    && git config --global user.email "autobughunter[bot]@users.noreply.github.com" \
+    && git config --global init.defaultBranch main
+
+# 7. Expose Hugging Face Space dashboard port
+EXPOSE 7860
 
 ENTRYPOINT ["python", "main.py"]

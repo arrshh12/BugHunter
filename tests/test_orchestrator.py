@@ -413,4 +413,54 @@ def test_unhandled_exception_in_scan_single_repo_returns_error_and_daemon_contin
     assert results[1]["outcome"] in ("CLEAN_EXHAUSTED", "SKIPPED_MAX_PRS", "NO_HEALTHY_KEYS")
 
 
+def test_orchestrator_7_prs_window_and_exhaustion_not_set_on_pr_created(orchestrator_setup):
+    """Verify that when a PR is created:
+    1. fully_exhausted is marked 0 in DB (not 1), allowing further scans on the repo.
+    2. The 7 PR window ceiling allows PRs 1..6 and triggers SKIPPED_MAX_PRS once open_prs reaches 7.
+    """
+    orch, db, gm, tmp_path = orchestrator_setup
+    orch.config.max_open_prs_per_repo = 7
+
+    custom_diff = """--- a/README.md
++++ b/README.md
+@@ -1,1 +1,2 @@
+ # repo
++fix: bug patch
+"""
+    # 1. First scan dispatches PR
+    res = orch.scan_single_repo(
+        "owner/multi-bug-repo",
+        simulated_agent_outcome="SUCCESS",
+        custom_diff=custom_diff,
+        simulated_open_prs=[]
+    )
+    assert res["outcome"] == "PR_CREATED"
+
+    # fully_exhausted MUST be 0 so the repo is NOT skipped on the next cycle
+    repo_stats = db.get_stats()["repositories"][0]
+    assert repo_stats["fully_exhausted"] == 0
+    assert repo_stats["total_prs_created"] == 1
+
+    # 2. Window of 7 PRs: 6 open PRs allows another scan
+    sim_6_prs = [{"number": i, "files": [f"file_{i}.py"]} for i in range(1, 7)]
+    res_6 = orch.scan_single_repo(
+        "owner/multi-bug-repo",
+        simulated_agent_outcome="SUCCESS",
+        custom_diff=custom_diff,
+        simulated_open_prs=sim_6_prs
+    )
+    assert res_6["outcome"] == "PR_CREATED"
+
+    # 3. Window of 7 PRs: 7 open PRs hits ceiling and skips
+    sim_7_prs = [{"number": i, "files": [f"file_{i}.py"]} for i in range(1, 8)]
+    res_7 = orch.scan_single_repo(
+        "owner/multi-bug-repo",
+        simulated_agent_outcome="SUCCESS",
+        custom_diff=custom_diff,
+        simulated_open_prs=sim_7_prs
+    )
+    assert res_7["outcome"] == "SKIPPED_MAX_PRS"
+
+
+
 
