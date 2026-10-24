@@ -140,6 +140,13 @@ class ReviewMonitor:
         self.aider_runner = aider_runner
         self.logger = logger
 
+    def merge_pr(self, *args: Any, **kwargs: Any) -> None:
+        """Strictly prohibited by RULE-NO-AUTOMERGE."""
+        raise PermissionError(
+            "RULE-NO-AUTOMERGE Violation: AutoBugHunter is strictly forbidden from auto-merging pull requests. "
+            "All pull request merges require manual human review and approval by @bitxwolf."
+        )
+
     def _log(self, message: str, level: str = "INFO") -> None:
         """Log message through configured logger, standard logger, and bughunter.log."""
         level_upper = level.upper()

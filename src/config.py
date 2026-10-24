@@ -71,6 +71,9 @@ class Config:
     openai_api_base: str = "https://api.scalemax.pro/v1"
     openai_api_key: str = ""
     llm_model: str = "openai/gpt-6-luna"
+    bot_github_user: str = "arrshh12"
+    main_github_user: str = "bitxwolf"
+    enable_auto_merge: bool = False
 
     @classmethod
     def load(
@@ -363,8 +366,19 @@ class Config:
         primary_base = parsed_keys[0].base_url if parsed_keys else default_base_url
         primary_model = parsed_keys[0].model if parsed_keys else default_model
 
+        # RULE-NO-AUTOMERGE validation: Auto-merging is strictly prohibited
+        auto_merge_val = get_val("ENABLE_AUTO_MERGE", False)
+        if isinstance(auto_merge_val, str) and auto_merge_val.strip().lower() in ("true", "1", "yes"):
+            raise ValueError("RULE-NO-AUTOMERGE Violation: Auto-merging is strictly prohibited. Merging is reserved solely for human @bitxwolf.")
+        if auto_merge_val is True:
+            raise ValueError("RULE-NO-AUTOMERGE Violation: Auto-merging is strictly prohibited. Merging is reserved solely for human @bitxwolf.")
+
+        bot_token = str(get_val("BOT_GITHUB_TOKEN") or get_val("GITHUB_TOKEN") or "")
+        bot_user = str(get_val("BOT_GITHUB_USER", "arrshh12")).strip() or "arrshh12"
+        main_user = str(get_val("MAIN_GITHUB_USER", "bitxwolf")).strip() or "bitxwolf"
+
         return cls(
-            github_token=str(get_val("GITHUB_TOKEN", "")),
+            github_token=bot_token,
             target_repos=target_repos,
             auto_discover_repos=auto_discover,
             llm_keys=parsed_keys,
@@ -390,6 +404,9 @@ class Config:
             openai_api_base=primary_base,
             openai_api_key=primary_key if primary_key != "NO_LLM_KEY_CONFIGURED" else "",
             llm_model=primary_model,
+            bot_github_user=bot_user,
+            main_github_user=main_user,
+            enable_auto_merge=False,
         )
 
 

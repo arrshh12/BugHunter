@@ -81,29 +81,11 @@ class GitManager:
         return env
 
     def configure_git_and_gh(self) -> None:
-        """Configure global git bot identity and authenticate GitHub CLI."""
-        auth_user = self.get_authenticated_user() or "arrshh12"
-        user_name = auth_user
-        user_email = f"{auth_user}@users.noreply.github.com"
-        try:
-            subprocess.run(["git", "config", "--global", "user.name", user_name], check=False, capture_output=True)
-            subprocess.run(["git", "config", "--global", "user.email", user_email], check=False, capture_output=True)
-        except Exception:
-            pass
-
-        if self.github_token and shutil.which("gh"):
-            try:
-                subprocess.run(
-                    ["gh", "auth", "login", "--with-token"],
-                    input=self.github_token,
-                    text=True,
-                    check=False,
-                    capture_output=True,
-                    env=self._gh_env(),
-                    timeout=30
-                )
-            except Exception:
-                pass
+        """Safely ensure bot environment is ready without modifying developer's global git config or gh login."""
+        # STRICT PROTOCOL: Do NOT modify --global git configuration or run global gh auth login.
+        # Developer machine identity is @bitxwolf. Bot identity (@arrshh12) is scoped locally
+        # inside target repositories (git config --local) and per subprocess via _gh_env().
+        pass
 
     def get_authenticated_user(self) -> str | None:
         """Return authenticated GitHub username using gh CLI or cached identity with REST fallback."""
@@ -435,6 +417,14 @@ class GitManager:
         pull_cmd.extend(["pull", "--ff-only", "origin", default_branch])
         subprocess.run(pull_cmd, cwd=target_path, check=False, capture_output=True)
 
+        # Configure bot git identity LOCALLY inside target repo (preserves developer's global @bitxwolf identity)
+        auth_user = self.get_authenticated_user() or "arrshh12"
+        try:
+            subprocess.run(["git", "config", "--local", "user.name", auth_user], cwd=target_path, check=False, capture_output=True)
+            subprocess.run(["git", "config", "--local", "user.email", f"{auth_user}@users.noreply.github.com"], cwd=target_path, check=False, capture_output=True)
+        except Exception:
+            pass
+
         # In fork mode: configure fork remote if authenticated user lacks push access to repo_slug
         if self.github_token and shutil.which("gh"):
             try:
@@ -540,6 +530,26 @@ class GitManager:
         """
         if force:
             raise ValueError("RULE-GIT-02 Violation: Force pushing is strictly prohibited")
+
+        # Check if attempting to push directly to bitxwolf/BugHunter default branch
+        target_check_slug = (repo_slug or "").strip().lower()
+        if not target_check_slug:
+            try:
+                origin_url = subprocess.run(
+                    ["git", "remote", "get-url", "origin"],
+                    cwd=repo_path, capture_output=True, text=True, check=False
+                ).stdout.strip().lower()
+                m = re.search(r"github\.com[/:]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+?)(?:\.git)?$", origin_url)
+                if m:
+                    target_check_slug = m.group(1).lower()
+            except Exception:
+                pass
+
+        if target_check_slug == "bitxwolf/bughunter" and branch_name.lower() in ("main", "master"):
+            raise PermissionError(
+                "RULE-GIT-06 Violation: AutoBugHunter bot is strictly forbidden from pushing directly to bitxwolf/BugHunter main branch. "
+                "All BugHunter core codebase changes must be authored and pushed by @bitxwolf only."
+            )
 
         # Verify branch exists locally
         p = subprocess.run(["git", "branch", "--list", branch_name], cwd=repo_path, capture_output=True, text=True, check=True)
@@ -677,3 +687,17 @@ class GitManager:
                     target.unlink()
                 except OSError:
                     pass
+
+    def merge_pull_request(self, *args: Any, **kwargs: Any) -> None:
+        """Strictly prohibited by RULE-NO-AUTOMERGE."""
+        raise PermissionError(
+            "RULE-NO-AUTOMERGE Violation: AutoBugHunter is strictly forbidden from auto-merging pull requests. "
+            "All pull request merges require manual human review and approval by @bitxwolf."
+        )
+
+    def auto_merge_pr(self, *args: Any, **kwargs: Any) -> None:
+        """Strictly prohibited by RULE-NO-AUTOMERGE."""
+        raise PermissionError(
+            "RULE-NO-AUTOMERGE Violation: AutoBugHunter is strictly forbidden from auto-merging pull requests. "
+            "All pull request merges require manual human review and approval by @bitxwolf."
+        )
