@@ -131,19 +131,21 @@ def test_rate_limit_detection_precision_avoids_spurious_aborts():
         "Processed 14290 tokens successfully",
         "PID 24298 running",
         "Line 4290",
-        "commit a429ef",
         "port 4290",
+        "Processed 429 records successfully",
+        "Found 429 warnings in scan",
+        "Catalog contains 429 active repositories",
     ]
 
     for line in false_positive_lines:
         assert runner._is_rate_limit_line(line) == (False, ""), f"False positive triggered for: {line}"
 
     genuine_rate_limit_lines = [
-        ("HTTP 429: RateLimitError: Requests rate limit exceeded", r"\b429\b"),
-        ("openai.RateLimitError: Error code: 429", r"\b429\b"),
-        ("429 Too Many Requests", r"\b429\b"),
-        ("Client error: 429", r"\b429\b"),
-        ("Status code: 429", r"\b429\b"),
+        ("HTTP 429: RateLimitError: Requests rate limit exceeded", OpenHandsRunner.SIG_429),
+        ("openai.RateLimitError: Error code: 429", OpenHandsRunner.SIG_429),
+        ("429 Too Many Requests", "429 Too Many Requests"),
+        ("Client error: 429", OpenHandsRunner.SIG_429),
+        ("Status code: 429", OpenHandsRunner.SIG_429),
         ("RateLimitError: model overloaded", "RateLimitError"),
         ("insufficient_quota: limit reached", "insufficient_quota"),
         ("402 Payment Required: billing expired", "402 Payment Required"),
@@ -256,6 +258,53 @@ def test_runner_live_stdout_scanning_with_genuine_402_quota(tmp_path: Path, samp
     )
     assert res.success is False
     assert res.error_type == "QUOTA_EXHAUSTED_402"
+
+
+def test_direct_llm_agent_prevents_file_truncation_on_large_file(tmp_path: Path, sample_key, monkeypatch):
+    """Verify _run_direct_llm_agent does not drop file tail and aborts on truncated LLM response."""
+    import json
+    import time
+    from unittest.mock import MagicMock
+
+    runner = OpenHandsRunner(timeout_seconds=5)
+    # Create a 600-line file
+    large_file = tmp_path / "large_app.py"
+    original_lines = [f"# line {i}" for i in range(1, 601)]
+    large_file.write_text("\n".join(original_lines), encoding="utf-8")
+
+    # Mock requests.post to return a truncated 200-line response
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    truncated_content = "\n".join([f"# line {i}" for i in range(1, 201)])
+    mock_resp.json.return_value = {
+        "choices": [{
+            "message": {
+                "content": json.dumps({
+                    "bug_found": True,
+                    "bug_summary": "Attempted truncation",
+                    "updated_full_file": truncated_content,
+                })
+            }
+        }]
+    }
+
+    import requests
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: mock_resp)
+
+    logs = []
+    res = runner._run_direct_llm_agent(
+        repo_path=tmp_path,
+        key_entry=sample_key,
+        task_prompt_path=tmp_path / "task.txt",
+        log_callback=logs.append,
+        start_time=time.time(),
+    )
+
+    # Verification: Truncation was prevented, file tail on disk was not wiped out
+    assert res.success is False
+    assert res.error_type == "FILE_TRUNCATION_PREVENTED"
+    assert len(large_file.read_text(encoding="utf-8").splitlines()) == 600
+
 
 
 

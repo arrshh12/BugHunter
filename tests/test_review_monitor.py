@@ -850,3 +850,78 @@ def test_bughunter_log_logging(sample_config, test_db, tmp_path):
     content = log_file.read_text(encoding="utf-8")
     assert "Testing warning log to file" in content
     assert "[WARNING]" in content
+
+
+def test_review_monitor_latest_feedback_and_resolution_failure_guard(sample_config, test_db, mock_git_repo):
+    """Verify:
+    1. reversed comment iteration picks the latest non-bot reviewer comment.
+    2. Failed GraphQL thread resolution marks REPLY_POSTED_RESOLUTION_FAILED and success=False.
+    """
+    git_manager = MagicMock(spec=GitManager)
+    git_manager.repos_dir = mock_git_repo.parent
+    git_manager.rollback_working_tree = MagicMock()
+    git_manager.push_atomic_branch = MagicMock()
+
+    monitor = ReviewMonitor(
+        config=sample_config,
+        database=test_db,
+        git_manager=git_manager,
+        verifier=Verifier(),
+    )
+
+    # 1. Test reversed comment selection
+    multi_comment_thread = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "headRefName": "fix/multi-comment",
+                    "reviewThreads": {
+                        "nodes": [
+                            {
+                                "id": "PRRT_multi_1",
+                                "isResolved": False,
+                                "path": "src_code.py",
+                                "line": 2,
+                                "comments": {
+                                    "nodes": [
+                                        {"id": "PRRC_old", "databaseId": 1001, "body": "Old feedback 🐛", "author": {"login": "reviewer"}},
+                                        {"id": "PRRC_bot", "databaseId": 1002, "body": "Bot reply", "author": {"login": "arrshh12"}},
+                                        {"id": "PRRC_latest", "databaseId": 1003, "body": "Latest feedback 🚀", "author": {"login": "reviewer"}},
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+    }
+
+    with patch.object(monitor, "execute_graphql", return_value=multi_comment_thread):
+        comments = monitor.fetch_unresolved_review_threads("bitxwolf/test_repo", 1, "fix/multi-comment")
+
+    assert len(comments) == 1
+    assert comments[0].comment_id == "PRRC_latest"
+    assert comments[0].comment_database_id == 1003
+    assert "Latest feedback" in comments[0].body
+
+    # 2. Test failed resolveReviewThread mutation
+    subprocess.run(["git", "checkout", "-b", "fix/multi-comment"], cwd=mock_git_repo, check=True, capture_output=True)
+
+    with patch.object(monitor, "post_inline_reply", return_value=True), \
+         patch.object(monitor, "resolve_review_thread", return_value=False), \
+         patch.object(monitor, "_run_direct_llm_remediation", side_effect=lambda p, f, pr: (p / f).write_text("def run():\n    return 100\n", encoding="utf-8") or True):
+        res = monitor.remediate_single_thread(
+            repo_slug="bitxwolf/test_repo",
+            pr_info={"number": 1, "headRefName": "fix/multi-comment"},
+            comment=comments[0],
+            repo_path=mock_git_repo,
+        )
+
+    assert res.success is True
+    # Thread should be persisted with RESOLUTION_FAILED in DB to prevent duplicate loops
+    rems = test_db.get_review_remediations(pr_number=1)
+    assert len(rems) == 1
+    assert rems[0]["status"] == "RESOLUTION_FAILED"
+    assert test_db.is_thread_remediated("PRRT_multi_1") is True
+

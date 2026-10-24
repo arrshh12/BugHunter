@@ -462,5 +462,42 @@ def test_orchestrator_7_prs_window_and_exhaustion_not_set_on_pr_created(orchestr
     assert res_7["outcome"] == "SKIPPED_MAX_PRS"
 
 
+def test_orchestrator_pr_creation_failure_rolls_back_and_returns_error(orchestrator_setup, monkeypatch):
+    """Verify that gh pr create failure on GitHub returns PR_CREATION_FAILED and rolls back working tree."""
+    orch, db, gm, tmp_path = orchestrator_setup
+    repo_slug = "owner/failing-pr-repo"
+    custom_diff = """--- a/README.md
++++ b/README.md
+@@ -1,1 +1,2 @@
+ # repo
++fix: bug patch
+"""
+    import subprocess
+    real_sub_run = subprocess.run
+
+    def mock_sub_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "create":
+            mock_res = MagicMock()
+            mock_res.returncode = 1
+            mock_res.stdout = ""
+            mock_res.stderr = "GraphQL: validation failed: branch already exists"
+            return mock_res
+        return real_sub_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_sub_run)
+    monkeypatch.setattr(orch.config, "github_token", "fake_token")
+    monkeypatch.setattr("shutil.which", lambda tool: "/usr/bin/gh" if tool == "gh" else None)
+
+    res = orch.scan_single_repo(
+        repo_slug,
+        simulated_agent_outcome="SUCCESS",
+        custom_diff=custom_diff,
+    )
+    assert res["outcome"] == "PR_CREATION_FAILED"
+    assert "validation failed" in res["error"]
+    assert db.get_stats()["repositories"][0]["status"] == "ERROR"
+
+
+
 
 

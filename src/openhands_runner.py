@@ -35,8 +35,10 @@ class SessionResult:
 class OpenHandsRunner:
     """Headless OpenHands execution harness with rate-limit and timeout detection."""
 
+    SIG_429 = r"(?i)\b(?:status|code|http|error)[\s:_]*429\b"
     RATE_LIMIT_SIGNATURES = [
-        r"\b429\b",
+        SIG_429,
+        "429 Too Many Requests",
         "RateLimitError",
         "insufficient_quota",
         "402 Payment Required",
@@ -49,15 +51,39 @@ class OpenHandsRunner:
         self.timeout_seconds = timeout_seconds
         self.runtime = runtime or os.getenv("OPENHANDS_RUNTIME", "docker" if shutil.which("docker") else "process")
 
+    @staticmethod
+    def _sanitize_log_line(line: str) -> str:
+        """Strip non-rate-limit syntax patterns (file paths, line numbers, PRs, URLs) before checking."""
+        # 1. URLs (including those with port numbers, e.g. http://localhost:429/v1)
+        s = re.sub(r"https?://[^\s]+", " ", line)
+        # 2. File paths with line/col numbers, e.g. foo.py:429: or utils.py:429:1:
+        s = re.sub(r":\d+(?::\d+)?(?=[\s:]|$)", " ", s)
+        # 3. Python traceback / compiler line numbers, e.g. 'line 429'
+        s = re.sub(r"(?i)\bline\s+\d+\b", " ", s)
+        # 4. PR and Issue numbers, e.g. '#429', '#402'
+        s = re.sub(r"[#＃]\d+\b", " ", s)
+        # 5. Git commit hashes and refs, e.g. 'commit 402a8f...' or hex sequences (min 6 chars)
+        s = re.sub(r"(?i)\bcommit\s+[0-9a-fA-F]+\b", " ", s)
+        s = re.sub(r"\b[0-9a-fA-F]{6,40}\b", " ", s)
+        # 6. Test assertion comparisons, e.g. 'AssertionError: Expected 429 but got 200'
+        s = re.sub(r"(?i)\bAssertionError\s*:.*", " ", s)
+        s = re.sub(r"(?i)\bExpected\s+\d+\s+but\s+got\s+\d+\b", " ", s)
+        # 7. Metrics and duration units, e.g. '429ms', '4290 tokens'
+        s = re.sub(r"(?i)\b\d+\s*(?:ms|s|tokens?|records?|characters?)\b", " ", s)
+        # 8. Process IDs, User IDs, Ports, e.g. 'PID 4290', 'User ID 429', 'port 5020'
+        s = re.sub(r"(?i)\b(?:PID|User ID|User|Port)\s+\d+\b", " ", s)
+        return s
+
     def _is_rate_limit_line(self, line: str) -> tuple[bool, str]:
         """Check if a log line matches any rate-limit or outage signature."""
         if not line:
             return False, ""
+        cleaned = self._sanitize_log_line(line)
         for sig in self.RATE_LIMIT_SIGNATURES:
-            if r"\b" in sig or "\\" in sig:
-                if re.search(sig, line, re.IGNORECASE):
+            if r"\b" in sig or "\\" in sig or "[" in sig or "(" in sig or "?" in sig:
+                if re.search(sig, cleaned, re.IGNORECASE):
                     return True, sig
-            elif sig.lower() in line.lower():
+            elif sig.lower() in cleaned.lower():
                 return True, sig
         return False, ""
 
@@ -395,10 +421,8 @@ class OpenHandsRunner:
             log_callback(f"[ERROR] Could not read target file {rel_path}: {e}")
             return SessionResult(success=False, bug_found=False, error_type=str(e), duration_seconds=time.time() - start_time)
 
-        # Truncate original code if it's too huge (> 400 lines) to preserve token budget
+        # Retain entire file; do NOT truncate original code destructively
         code_lines = original_code.splitlines()
-        if len(code_lines) > 400:
-            original_code = "\n".join(code_lines[:400])
 
         log_callback(f"[LLM_AGENT] Auditing {rel_path} with {key_entry.model}...")
 
@@ -414,7 +438,9 @@ class OpenHandsRunner:
             '  "scope": "short conventional scope, e.g. api, app, auth, utils",\n'
             '  "pr_title": "fix(<scope>): concise description in conventional commit format",\n'
             '  "pr_body": "## Description\\nDetails about the bug.\\n\\n## Fix Applied\\nHow it was fixed.\\n\\n## Verification\\nProof of fix.",\n'
-            '  "updated_full_file": "The COMPLETE modified file content with the fix applied"\n'
+            '  "search_block": "Exact lines to find in original file",\n'
+            '  "replace_block": "Replacement lines for search_block",\n'
+            '  "updated_full_file": "The COMPLETE modified file content with the fix applied (must contain the entire file, never truncate the tail)"\n'
             "}\n"
             "If no genuine functional defect exists in the file, respond with:\n"
             '{"bug_found": false, "bug_summary": "Clean file: no defects found"}\n'
@@ -463,7 +489,7 @@ class OpenHandsRunner:
             log_callback(f"[ERROR] Failed to query LLM or parse fix response: {e}")
             return SessionResult(success=False, bug_found=False, error_type=str(e), duration_seconds=time.time() - start_time)
 
-        if not parsed.get("bug_found", False) or not parsed.get("updated_full_file"):
+        if not parsed.get("bug_found", False):
             log_callback(f"[LLM_AGENT] Audit completed: {parsed.get('bug_summary', 'Clean file')}")
             report = {
                 "bug_found": False,
@@ -478,8 +504,38 @@ class OpenHandsRunner:
             report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
             return SessionResult(success=True, bug_found=False, report_path=report_file, duration_seconds=time.time() - start_time, report_data=report)
 
-        # Apply updated file content
-        new_content = parsed["updated_full_file"]
+        # Apply updated file content, checking for search/replace block or complete file
+        new_content = None
+        if "search_block" in parsed and "replace_block" in parsed and parsed["search_block"] and parsed["search_block"] in original_code:
+            new_content = original_code.replace(parsed["search_block"], parsed["replace_block"], 1)
+        elif parsed.get("updated_full_file"):
+            candidate = parsed["updated_full_file"]
+            # Guard against tail truncation:
+            if len(code_lines) > 400 and len(candidate.splitlines()) < (len(code_lines) - 50):
+                log_callback(f"[ERROR] LLM fix truncated target file tail ({len(candidate.splitlines())} lines vs {len(code_lines)} lines). Aborting.")
+                return SessionResult(
+                    success=False,
+                    bug_found=False,
+                    error_type="FILE_TRUNCATION_PREVENTED",
+                    duration_seconds=time.time() - start_time,
+                )
+            new_content = candidate
+
+        if not new_content:
+            log_callback(f"[LLM_AGENT] No valid fix content provided in LLM response.")
+            report = {
+                "bug_found": False,
+                "bug_summary": "No valid fix content returned by LLM",
+                "file_modified": "",
+                "pr_title": "",
+                "pr_body": "",
+                "test_command_run": "",
+                "tests_passed": True
+            }
+            report_file = repo_path / ".bug_fix_report.json"
+            report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            return SessionResult(success=True, bug_found=False, report_path=report_file, duration_seconds=time.time() - start_time, report_data=report)
+
         target_file.write_text(new_content, encoding="utf-8")
         log_callback(f"[LLM_AGENT] Applied atomic fix to {rel_path}")
 

@@ -134,6 +134,10 @@ class FiveAxisTriageEngine:
         ):
             return self.AXIS_SECURITY
 
+        # Cosmetic Ruff / Pyflakes rules reclassified to readability (composite score = 0)
+        if rule_upper in ("F401", "F841", "F541", "F504", "F522", "F523", "F404"):
+            return self.AXIS_READABILITY
+
         # 2. Correctness (weight 100)
         if (
             ((rule_upper.startswith("F") and not rule_upper.startswith("FIX")))
@@ -319,6 +323,8 @@ class StaticScanner:
                         cwd=repo_path,
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=self.timeout_seconds
                     )
                     if res.stdout.strip():
@@ -373,6 +379,8 @@ class StaticScanner:
                         cwd=repo_path,
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=self.timeout_seconds
                     )
                     if res.stdout.strip():

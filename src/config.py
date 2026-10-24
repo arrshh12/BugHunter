@@ -157,7 +157,16 @@ class Config:
         )
 
         # Parse LLM Keys pool
-        keys_pool_val = get_val("LLM_KEYS_POOL", "")
+        keys_pool_val = None
+        if overrides:
+            for k in ("LLM_KEYS", "llm_keys", "LLM_KEYS_POOL", "llm_keys_pool"):
+                if k in overrides:
+                    keys_pool_val = overrides[k]
+                    break
+        if keys_pool_val is None:
+            keys_pool_val = get_val("LLM_KEYS_POOL", None)
+        if keys_pool_val is None:
+            keys_pool_val = get_val("LLM_KEYS", "")
         parsed_keys: list[KeyConfig] = []
 
         if isinstance(keys_pool_val, list):

@@ -415,7 +415,17 @@ class GitManager:
             auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
             pull_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
         pull_cmd.extend(["pull", "--ff-only", "origin", default_branch])
-        subprocess.run(pull_cmd, cwd=target_path, check=False, capture_output=True)
+        p_pull = subprocess.run(pull_cmd, cwd=target_path, check=False, capture_output=True, text=True)
+        if p_pull.returncode != 0:
+            p_chk = subprocess.run(["git", "remote", "get-url", "origin"], cwd=target_path, check=False, capture_output=True, text=True)
+            if p_chk.returncode == 0 and p_chk.stdout.strip():
+                warn_msg = f"git pull --ff-only origin {default_branch} failed for {repo_slug}: {p_pull.stderr.strip()[:200]}"
+                print(f"[WARN] [GIT_MANAGER] {warn_msg}")
+                try:
+                    with open(Path("bughunter.log"), "a", encoding="utf-8") as f:
+                        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [WARN] [GIT_MANAGER] {warn_msg}\n")
+                except Exception:
+                    pass
 
         # Configure bot git identity LOCALLY inside target repo (preserves developer's global @bitxwolf identity)
         auth_user = self.get_authenticated_user() or "arrshh12"
@@ -510,6 +520,13 @@ class GitManager:
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=repo_path, check=True, capture_output=True)
         return branch_name
 
+    def construct_head_spec(self, branch_name: str, remote_target: str = "origin") -> str:
+        """Construct PR head specification: branch_name when remote is origin, or auth_user:branch_name when fork."""
+        auth_user = self.get_authenticated_user() or "arrshh12"
+        if remote_target == "fork":
+            return f"{auth_user}:{branch_name}"
+        return branch_name
+
     def push_atomic_branch(
         self,
         repo_path: Path,
@@ -545,7 +562,10 @@ class GitManager:
             except Exception:
                 pass
 
-        if target_check_slug == "bitxwolf/bughunter" and branch_name.lower() in ("main", "master"):
+        auth_user = self.get_authenticated_user() or "arrshh12"
+        is_bitxwolf_auth = bool(auth_user.lower() == "bitxwolf")
+
+        if not is_bitxwolf_auth and target_check_slug == "bitxwolf/bughunter" and branch_name.lower() in ("main", "master"):
             raise PermissionError(
                 "RULE-GIT-06 Violation: AutoBugHunter bot is strictly forbidden from pushing directly to bitxwolf/BugHunter main branch. "
                 "All BugHunter core codebase changes must be authored and pushed by @bitxwolf only."

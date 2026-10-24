@@ -6,6 +6,7 @@ Backs up and restores bughunter.sqlite snapshot to/from a private GitHub reposit
 from __future__ import annotations
 
 import base64
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -21,13 +22,21 @@ class StateSyncer:
         db_path: Path,
         state_dir: Path,
         state_repo: str,
-        github_token: str,
+        github_token: str = "",
         logger: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path).resolve()
         self.state_dir = Path(state_dir).resolve()
         self.state_repo = (state_repo or "").strip()
-        self.github_token = (github_token or "").strip()
+        state_token = os.environ.get("STATE_GITHUB_TOKEN", "").strip()
+        if not state_token and not github_token and shutil.which("gh"):
+            try:
+                res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5, check=False)
+                if res.returncode == 0 and res.stdout.strip():
+                    state_token = res.stdout.strip()
+            except Exception:
+                pass
+        self.github_token = (state_token or github_token or "").strip()
         self.logger = logger
         self._clone_dir = self.state_dir / ".state_repo_sync"
 
@@ -138,7 +147,10 @@ class StateSyncer:
         # 2. Perform atomic crash-consistent SQLite backup
         try:
             src_conn = sqlite3.connect(str(self.db_path), timeout=10)
-            src_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            try:
+                src_conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+            except Exception as cp_err:
+                self._log("WARN", f"Passive WAL checkpoint warning: {cp_err}")
             dest_conn = sqlite3.connect(str(dest_file), timeout=10)
             src_conn.backup(dest_conn)
             dest_conn.close()
@@ -147,6 +159,12 @@ class StateSyncer:
             self._log("WARN", f"SQLite online backup warning: {e}; falling back to copy2")
             try:
                 shutil.copy2(self.db_path, dest_file)
+                # On copy fallback, copy bughunter.sqlite, bughunter.sqlite-wal, and bughunter.sqlite-shm
+                for suffix in ("-wal", "-shm"):
+                    wal_src = self.db_path.parent / (self.db_path.name + suffix)
+                    if wal_src.exists():
+                        dest_wal = dest_file.parent / (dest_file.name + suffix)
+                        shutil.copy2(wal_src, dest_wal)
             except Exception as copy_err:
                 self._log("ERROR", f"Failed to stage bughunter.sqlite into sync repo: {copy_err}")
                 return False
@@ -158,13 +176,19 @@ class StateSyncer:
             return True
 
         # Configure git identity in clone repo
-        subprocess.run(["git", "config", "user.name", "arrshh12"], cwd=self._clone_dir, check=False)
-        subprocess.run(["git", "config", "user.email", "arrshh12@users.noreply.github.com"], cwd=self._clone_dir, check=False)
+        committer_name = "Bit Wolf" if "bitxwolf" in self.state_repo.lower() else "arrshh12"
+        committer_email = "bitxwolf@gmail.com" if "bitxwolf" in self.state_repo.lower() else "arrshh12@users.noreply.github.com"
+        subprocess.run(["git", "config", "user.name", committer_name], cwd=self._clone_dir, check=False)
+        subprocess.run(["git", "config", "user.email", committer_email], cwd=self._clone_dir, check=False)
         subprocess.run(["git", "branch", "-M", "main"], cwd=self._clone_dir, check=False)
 
         # 4. Commit and push
         try:
-            subprocess.run(["git", "add", "bughunter.sqlite"], cwd=self._clone_dir, check=True)
+            add_files = ["bughunter.sqlite"]
+            for sfx in ("-wal", "-shm"):
+                if (dest_file.parent / (dest_file.name + sfx)).exists():
+                    add_files.append(f"bughunter.sqlite{sfx}")
+            subprocess.run(["git", "add"] + add_files, cwd=self._clone_dir, check=True)
             commit_res = subprocess.run(
                 ["git", "commit", "-m", "chore(state): snapshot bughunter.sqlite [skip ci]"],
                 cwd=self._clone_dir,

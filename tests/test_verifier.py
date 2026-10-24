@@ -3,6 +3,7 @@ Unit tests for src/verifier.py: Diff bounds enforcer, secret leak detection, and
 """
 
 from pathlib import Path
+import subprocess
 import pytest
 from src.verifier import ConventionalTitle, Verifier
 
@@ -543,3 +544,40 @@ def test_conventional_title_hash_and_collection_compatibility():
     d[t2] = "updated_val"
     assert len(d) == 2
     assert d[t1] == "updated_val"
+
+
+def test_verifier_syntax_error_rejection(tmp_path: Path, verifier):
+    """Verify that syntax errors in modified Python files cause verification rejection."""
+    repo = tmp_path / "syntax_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo, check=True, capture_output=True)
+    (repo / "README.md").write_text("# Repo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    bad_py = repo / "bad.py"
+    bad_py.write_text("def broken_syntax(\n    return 42\n", encoding="utf-8")
+    subprocess.run(["git", "add", "bad.py"], cwd=repo, check=True, capture_output=True)
+
+    report = {"bug_found": True, "files_modified": ["bad.py"], "pr_title": "fix: broken"}
+    res = verifier.verify_and_sanitize_fix(repo_path=repo, skip_files=[], simulated_report=report)
+
+    assert res.verified is False
+    assert "Syntax error in patched Python file" in (res.error_reason or "")
+
+
+def test_verifier_crlf_line_normalization(tmp_path: Path, verifier):
+    """Verify that CRLF line endings in diffs are normalized to LF without inflating diff line count."""
+    crlf_diff = "--- a/file.py\r\n+++ b/file.py\r\n@@ -1,1 +1,2 @@\r\n-x = 1\r\n+x = 2\r\n"
+    report = {"bug_found": True, "files_modified": ["file.py"], "pr_title": "fix: crlf"}
+    res = verifier.verify_and_sanitize_fix(
+        repo_path=tmp_path,
+        skip_files=[],
+        simulated_report=report,
+        custom_diff=crlf_diff,
+    )
+    assert res.verified is True
+    assert res.diff_lines == 2
+

@@ -472,10 +472,10 @@ class TestProximityDeduplicationAndTriage:
             # Low severity in non-boundary file
             RawFinding(
                 tool="flake8",
-                rule_id="F401",
+                rule_id="B006",
                 file="src/utils.py",
                 line=1,
-                message="unused import",
+                message="mutable default argument",
                 severity="WARNING",
             ),
             # Security finding in trust boundary file with inbound callers

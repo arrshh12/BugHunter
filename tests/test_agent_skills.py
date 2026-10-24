@@ -475,9 +475,12 @@ def test_cosmetic_comment_rules_dropped_from_triage(tmp_path: Path):
     assert engine.classify_axis("TD002", "Missing author in TODO") == "readability"
     assert engine.classify_axis("CUSTOM_RULE", "Please fixme before commit") == "readability"
 
-    # Pyflakes correctness must remain unaffected
+    # Pyflakes genuine correctness must remain unaffected (e.g. F821)
     assert engine.classify_axis("F821", "Undefined name x") == "correctness"
-    assert engine.classify_axis("F401", "Unused import sys") == "correctness"
+    # Cosmetic Ruff / Pyflakes rules reclassified to readability
+    assert engine.classify_axis("F401", "Unused import sys") == "readability"
+    assert engine.classify_axis("F841", "Local variable x is assigned to but never used") == "readability"
+    assert engine.classify_axis("F541", "f-string without any placeholders") == "readability"
 
     # 2. Scanner end-to-end filtering: 100% cosmetic comment noise dropped
     repo = tmp_path / "repo_comments"

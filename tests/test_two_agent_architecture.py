@@ -740,3 +740,42 @@ class TestTwoAgentEndToEndIntegration:
             assert fix["success"] is True
             assert fix["head_spec"].startswith("arrshh12:")
 
+    def test_fixer_push_failure_leaves_bug_pending_and_rolls_back(self, sample_config: Config, tmp_path: Path):
+        """Verify that when Git push fails, the bug is NOT marked DONE in Bug-log.md and rollback is called."""
+        repo_dir = tmp_path / "repo_push_fail"
+        repo_dir.mkdir(parents=True)
+        subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+        (repo_dir / "src").mkdir()
+        (repo_dir / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+
+        log_path = repo_dir / "Bug-log.md"
+        log_path.write_text("- [ ] **BUG-999**: src/app.py:1 - [tool:rule] Fix bug\n", encoding="utf-8")
+
+        mock_gm = MagicMock(spec=GitManager)
+        mock_gm.get_authenticated_user.return_value = "arrshh12"
+        mock_gm.push_atomic_branch.side_effect = RuntimeError("Push rejected: network unreachable")
+
+        mock_aider = MagicMock(spec=AiderRunner)
+        from src.aider_runner import AiderResult
+        mock_aider.run_aider.return_value = AiderResult(
+            exit_code=0,
+            status="SUCCESS",
+            diff_output="--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+            target_file="src/app.py",
+        )
+
+        fixer = MainFixerAgent(config=sample_config, git_manager=mock_gm, aider_runner=mock_aider)
+        res = fixer.fix_next_bug("owner/repo", repo_dir, bug_log_path=log_path)
+
+        assert res.success is False
+        assert res.status == "PUSH_FAILED"
+        mock_gm.rollback_working_tree.assert_called_once()
+
+        # Bug must still be pending in Bug-log.md!
+        content = log_path.read_text(encoding="utf-8")
+        assert "- [ ] **BUG-999**" in content
+        assert "- [x]" not in content
+
+

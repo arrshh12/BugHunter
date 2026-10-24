@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -255,9 +256,10 @@ class Verifier:
                 modified_files=modified
             )
 
-        # 5. Check lines changed
+        # 5. Check lines changed with CRLF normalization
+        normalized_diff = diff_text.replace("\r\n", "\n")
         diff_lines = sum(
-            1 for line in diff_text.splitlines()
+            1 for line in normalized_diff.splitlines()
             if (line.startswith("+") and not line.startswith("+++"))
             or (line.startswith("-") and not line.startswith("---"))
         )
@@ -269,7 +271,42 @@ class Verifier:
                 modified_files=modified
             )
 
-        # 6. Check collision guard with skip_files
+        # 6. Syntax Check Gate (compile verification)
+        for mf in modified:
+            target_f = repo_path / mf
+            if not target_f.exists() or not target_f.is_file():
+                continue
+            if mf.endswith(".py"):
+                try:
+                    code_content = target_f.read_text(encoding="utf-8", errors="replace")
+                    compile(code_content, str(target_f), "exec")
+                except SyntaxError as e:
+                    return VerificationResult(
+                        verified=False,
+                        error_reason=f"Syntax error in patched Python file {mf}: {e}",
+                        modified_files=modified,
+                        diff_lines=diff_lines,
+                    )
+            elif mf.endswith((".js", ".mjs")):
+                if shutil.which("node"):
+                    p_node = subprocess.run(
+                        ["node", "--check", str(target_f)],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        check=False,
+                    )
+                    if p_node.returncode != 0:
+                        err_msg = p_node.stderr.strip() or f"Syntax error in {mf}"
+                        return VerificationResult(
+                            verified=False,
+                            error_reason=f"Syntax error in patched JavaScript file {mf}: {err_msg}",
+                            modified_files=modified,
+                            diff_lines=diff_lines,
+                        )
+
+        # 7. Check collision guard with skip_files
         for mf in modified:
             for sf in skip_files:
                 if mf == sf or Path(mf).name == Path(sf).name:
@@ -279,7 +316,7 @@ class Verifier:
                         modified_files=modified
                     )
 
-        # 7. Check for secret leaks
+        # 8. Check for secret leaks
         secrets_found = self.scan_for_secrets(diff_text)
         if secrets_found:
             return VerificationResult(
