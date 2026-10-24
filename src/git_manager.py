@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src.config import DEFAULT_CURATED_REPOS
+
 REPO_SLUG_REGEX = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$")
 
 
@@ -217,13 +219,8 @@ class GitManager:
                 pass
         return None
 
-    DEFAULT_CURATED_REPOS = [
-        "bitxwolf/Airllm-tui",
-        "bitxwolf/orb",
-        "bitxwolf/worldof3js",
-        "bitxwolf/medical-for-non-medics",
-        "bitxwolf/BugHunter",
-    ]
+    DEFAULT_CURATED_REPOS = DEFAULT_CURATED_REPOS
+
 
     @staticmethod
     def curate_catalog(
@@ -321,8 +318,9 @@ class GitManager:
         # Auto-discover and curate via gh CLI
         if shutil.which("gh"):
             try:
+                cmd = ["gh", "repo", "list", "bitxwolf", "--limit", "100", "--json", "nameWithOwner,name,isFork,isArchived,createdAt"]
                 res = subprocess.run(
-                    ["gh", "repo", "list", "--limit", "100", "--json", "nameWithOwner,name,isFork,isArchived,createdAt"],
+                    cmd,
                     capture_output=True,
                     text=True,
                     env=self._gh_env(),
@@ -522,8 +520,24 @@ class GitManager:
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=repo_path, check=True, capture_output=True)
         return branch_name
 
-    def push_atomic_branch(self, repo_path: Path, branch_name: str, force: bool = False, remote: str = "origin") -> None:
-        """Push branch to origin or fork remote without force push (enforcing RULE-GIT-02)."""
+    def push_atomic_branch(
+        self,
+        repo_path: Path,
+        branch_name: str,
+        force: bool = False,
+        remote: str = "origin",
+        repo_slug: str | None = None,
+    ) -> str:
+        """Push branch to origin or fork remote without force push (enforcing RULE-GIT-02).
+
+        When direct push to bitxwolf/<repo> on remote 'origin' fails due to permission denial
+        (HTTP 403 or 'permission denied' or 'denied to'), automatically:
+        - Resolves target repo slug (either passed in or extracted from origin remote url).
+        - Calls ensure_fork(target_slug) to verify/create user fork under arrshh12.
+        - Adds or sets remote 'fork' to https://github.com/<fork_slug>.git.
+        - Pushes branch to 'fork' remote without force push.
+        - Returns 'fork' (or 'origin' when direct push succeeds).
+        """
         if force:
             raise ValueError("RULE-GIT-02 Violation: Force pushing is strictly prohibited")
 
@@ -532,14 +546,27 @@ class GitManager:
         if branch_name not in p.stdout:
             raise ValueError(f"Branch {branch_name} does not exist locally")
 
-        try:
+        def _do_push(target_remote: str):
             push_cmd = ["git"]
             if self.github_token:
                 auth_bytes = f"x-access-token:{self.github_token}".encode()
                 auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
                 push_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
-            push_cmd.extend(["push", remote, branch_name])
-            subprocess.run(push_cmd, cwd=repo_path, check=True, capture_output=True, timeout=120)
+            push_cmd.extend(["push", target_remote, branch_name])
+            try:
+                return subprocess.run(push_cmd, cwd=repo_path, check=True, capture_output=True, timeout=120)
+            except subprocess.CalledProcessError as err:
+                scrubbed_cmd = [self._scrub_credentials(str(c)) for c in err.cmd] if isinstance(err.cmd, list) else self._scrub_credentials(str(err.cmd))
+                err.cmd = scrubbed_cmd
+                if err.stderr:
+                    err.stderr = self._scrub_credentials(err.stderr)
+                if err.stdout:
+                    err.stdout = self._scrub_credentials(err.stdout)
+                raise err
+
+        try:
+            _do_push(remote)
+            return remote
         except subprocess.CalledProcessError as e:
             scrubbed_cmd = [self._scrub_credentials(str(c)) for c in e.cmd] if isinstance(e.cmd, list) else self._scrub_credentials(str(e.cmd))
             e.cmd = scrubbed_cmd
@@ -547,6 +574,63 @@ class GitManager:
                 e.stderr = self._scrub_credentials(e.stderr)
             if e.stdout:
                 e.stdout = self._scrub_credentials(e.stdout)
+
+            err_text = f"{e.stderr or ''} {e.stdout or ''}".lower()
+            is_permission_denied = (
+                "403" in err_text
+                or "permission denied" in err_text
+                or "denied to" in err_text
+                or "access denied" in err_text
+            )
+
+            # When direct push to origin fails due to permission denial, fallback to fork
+            if is_permission_denied and remote == "origin":
+                target_slug = repo_slug
+                if not target_slug:
+                    try:
+                        p_orig = subprocess.run(
+                            ["git", "remote", "get-url", "origin"],
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        if p_orig.returncode == 0:
+                            m = re.search(r"github\.com[/:]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+?)(?:\.git)?$", p_orig.stdout.strip())
+                            if m:
+                                target_slug = m.group(1)
+                    except Exception:
+                        pass
+
+                if target_slug:
+                    fork_slug = self.ensure_fork(target_slug)
+                    if fork_slug:
+                        fork_url = f"https://github.com/{fork_slug}.git"
+                        p_fork = subprocess.run(
+                            ["git", "remote", "get-url", "fork"],
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        if p_fork.returncode == 0:
+                            subprocess.run(
+                                ["git", "remote", "set-url", "fork", fork_url],
+                                cwd=repo_path,
+                                check=False,
+                                capture_output=True,
+                            )
+                        else:
+                            subprocess.run(
+                                ["git", "remote", "add", "fork", fork_url],
+                                cwd=repo_path,
+                                check=False,
+                                capture_output=True,
+                            )
+
+                        # Retry push to fork remote
+                        _do_push("fork")
+                        return "fork"
 
             # Check if remote is configured
             has_remote = False
@@ -562,7 +646,7 @@ class GitManager:
             if has_remote:
                 raise e
             # In test environments without remote configured, ignore push failure
-            pass
+            return remote
         except Exception as e:
             # Check if remote is configured before ignoring generic exceptions
             has_remote = False
@@ -578,7 +662,7 @@ class GitManager:
             if has_remote:
                 raise e
             # In test environments without remote configured, ignore push failure
-            pass
+            return remote
 
     def rollback_working_tree(self, repo_path: Path, default_branch: str = "main") -> None:
         """Clean working tree, checkout default branch, and purge temporary artifacts."""

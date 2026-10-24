@@ -33,6 +33,16 @@ def mask_key(api_key: str) -> str:
     return f"{api_key[:4]}...{api_key[-4:]}"
 
 
+DEFAULT_CURATED_REPOS: list[str] = [
+    "bitxwolf/Airllm-tui",             # Priority 1
+    "bitxwolf/orb",                    # Priority 2
+    "bitxwolf/worldof3js",             # Priority 3
+    "bitxwolf/medical-for-non-medics", # Priority 4
+    # Priority 5: Dynamic non-fork repos created >= 2026-10-23
+    "bitxwolf/BugHunter",              # Priority 6 (scanned last)
+]
+
+
 @dataclass
 class Config:
     github_token: str
@@ -381,3 +391,7 @@ class Config:
             openai_api_key=primary_key if primary_key != "NO_LLM_KEY_CONFIGURED" else "",
             llm_model=primary_model,
         )
+
+
+Config.DEFAULT_CURATED_REPOS = DEFAULT_CURATED_REPOS
+

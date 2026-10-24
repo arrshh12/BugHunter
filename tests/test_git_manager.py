@@ -219,7 +219,7 @@ def test_push_atomic_branch_raises_when_remote_configured(tmp_path: Path):
     """Verify push_atomic_branch re-raises CalledProcessError with scrubbed credentials when origin remote is configured."""
     from unittest.mock import patch
 
-    token = "ghp_SecretToken12345678901234567890123456"
+    token = "mock_token"
     gm = GitManager(workspace_dir=tmp_path, github_token=token)
     repo_dir = tmp_path / "repos" / "test_repo"
     repo_dir.mkdir(parents=True)
@@ -257,7 +257,7 @@ def test_push_atomic_branch_raises_when_remote_configured(tmp_path: Path):
 
 def test_push_atomic_branch_swallows_when_remote_unconfigured(tmp_path: Path):
     """Verify push_atomic_branch swallows errors when no origin remote exists (backward compatibility)."""
-    token = "ghp_SecretToken12345678901234567890123456"
+    token = "mock_token"
     gm = GitManager(workspace_dir=tmp_path, github_token=token)
     repo_dir = tmp_path / "repos" / "test_local_only"
     repo_dir.mkdir(parents=True)
@@ -369,6 +369,171 @@ def test_curate_catalog_multiple_new_repos_sorted_by_date():
         "bitxwolf/brand-new-b",
         "bitxwolf/BugHunter",
     ]
+
+
+def test_discover_or_load_repos_queries_bitxwolf_explicitly(tmp_path: Path, monkeypatch):
+    """Verify discover_or_load_repos queries bitxwolf explicitly via gh repo list when auto_discover=True."""
+    import json
+    import shutil
+    gm = GitManager(workspace_dir=tmp_path, github_token="mock_token")
+
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/gh" if cmd == "gh" else None)
+
+    captured_cmds = []
+    fake_repos = [
+        {"nameWithOwner": "bitxwolf/Airllm-tui", "name": "Airllm-tui", "isFork": False, "isArchived": False, "createdAt": "2026-07-06T18:52:33Z"},
+        {"nameWithOwner": "bitxwolf/orb", "name": "orb", "isFork": False, "isArchived": False, "createdAt": "2026-07-08T17:50:06Z"},
+        {"nameWithOwner": "bitxwolf/BugHunter", "name": "BugHunter", "isFork": False, "isArchived": False, "createdAt": "2026-10-22T19:21:22Z"},
+    ]
+
+    def mock_run(cmd, *args, **kwargs):
+        captured_cmds.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(fake_repos), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    repos = gm.discover_or_load_repos("", auto_discover=True)
+
+    assert any(
+        isinstance(c, list) and c[:4] == ["gh", "repo", "list", "bitxwolf"]
+        for c in captured_cmds
+    )
+    assert repos[0] == "bitxwolf/Airllm-tui"
+    assert repos[-1] == "bitxwolf/BugHunter"
+
+
+def test_push_atomic_branch_catches_403_and_falls_back_to_fork(tmp_path: Path, monkeypatch):
+    """Verify push_atomic_branch catches HTTP 403 permission denial on origin and falls back to ensure_fork and fork remote."""
+    token = "mock_token"
+    gm = GitManager(workspace_dir=tmp_path, github_token=token)
+    repo_dir = tmp_path / "repos" / "test_403_repo"
+    repo_dir.mkdir(parents=True)
+
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo_dir, check=True, capture_output=True)
+    (repo_dir / "README.md").write_text("test", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+    branch = gm.create_atomic_branch(repo_dir)
+
+    # Configure origin remote to bitxwolf/test_403_repo
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/bitxwolf/test_403_repo.git"], cwd=repo_dir, check=True, capture_output=True)
+
+    # Mock ensure_fork to return arrshh12/test_403_repo
+    monkeypatch.setattr(gm, "ensure_fork", lambda slug: "arrshh12/test_403_repo")
+
+    real_run = subprocess.run
+    push_attempts = []
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and "push" in cmd:
+            target_remote = cmd[cmd.index("push") + 1]
+            push_attempts.append(target_remote)
+            if target_remote == "origin":
+                raise subprocess.CalledProcessError(
+                    128,
+                    cmd,
+                    stderr=f"remote: Permission to bitxwolf/test_403_repo.git denied to arrshh12. fatal: unable to access 'https://github.com/bitxwolf/test_403_repo.git/': The requested URL returned error: 403"
+                )
+            elif target_remote == "fork":
+                # Simulated successful push to fork
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+
+    # Case A: with explicit repo_slug
+    result_remote = gm.push_atomic_branch(repo_dir, branch, repo_slug="bitxwolf/test_403_repo")
+    assert result_remote == "fork"
+    assert "origin" in push_attempts
+    assert "fork" in push_attempts
+
+    # Verify fork remote was configured in git
+    chk_fork = real_run(["git", "remote", "get-url", "fork"], cwd=repo_dir, capture_output=True, text=True, check=True)
+    assert chk_fork.stdout.strip() == "https://github.com/arrshh12/test_403_repo.git"
+
+    # Case B: without passing repo_slug (extracted from origin remote URL)
+    push_attempts.clear()
+    result_remote_extracted = gm.push_atomic_branch(repo_dir, branch)
+    assert result_remote_extracted == "fork"
+    assert "origin" in push_attempts
+    assert "fork" in push_attempts
+
+
+def test_push_atomic_branch_raises_on_generic_error_when_remote_configured(tmp_path: Path):
+    """Verify push_atomic_branch raises CalledProcessError on non-403 error when origin is configured."""
+    from unittest.mock import patch
+    token = "mock_token"
+    gm = GitManager(workspace_dir=tmp_path, github_token=token)
+    repo_dir = tmp_path / "repos" / "test_generic_err"
+    repo_dir.mkdir(parents=True)
+
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo_dir, check=True, capture_output=True)
+    (repo_dir / "README.md").write_text("test", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+    branch = gm.create_atomic_branch(repo_dir)
+
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/fake/repo.git"], cwd=repo_dir, check=True, capture_output=True)
+
+    real_run = subprocess.run
+    push_err = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["git", "push", "origin", branch],
+        stderr="fatal: remote rejected (shallow update not allowed)"
+    )
+
+    def mock_push(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) > 1 and "push" in cmd:
+            raise push_err
+        return real_run(cmd, *args, **kwargs)
+
+    with patch("subprocess.run", side_effect=mock_push):
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
+            gm.push_atomic_branch(repo_dir, branch)
+        assert "shallow update not allowed" in str(exc_info.value.stderr)
+
+
+def test_push_atomic_branch_rule_git_02_force_push_strictly_prohibited(tmp_path: Path):
+    """Verify RULE-GIT-02: push_atomic_branch strictly prohibits force=True."""
+    gm = GitManager(workspace_dir=tmp_path)
+    repo_dir = tmp_path / "repos" / "test_force_guard"
+    repo_dir.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo_dir, check=True, capture_output=True)
+    (repo_dir / "README.md").write_text("test", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
+    branch = gm.create_atomic_branch(repo_dir)
+
+    with pytest.raises(ValueError, match=r"RULE-GIT-02 Violation: Force pushing is strictly prohibited"):
+        gm.push_atomic_branch(repo_dir, branch, force=True)
+
+
+def test_default_curated_repos_order_and_priority_6():
+    """Verify DEFAULT_CURATED_REPOS ordering has bitxwolf/BugHunter as priority 6 (scanned last) and matches Config."""
+    from src.config import Config, DEFAULT_CURATED_REPOS
+
+    expected = [
+        "bitxwolf/Airllm-tui",             # Priority 1
+        "bitxwolf/orb",                    # Priority 2
+        "bitxwolf/worldof3js",             # Priority 3
+        "bitxwolf/medical-for-non-medics", # Priority 4
+        # Priority 5: Dynamic non-fork repos created >= 2026-10-23
+        "bitxwolf/BugHunter",              # Priority 6 (scanned last)
+    ]
+
+    assert DEFAULT_CURATED_REPOS == expected
+    assert Config.DEFAULT_CURATED_REPOS == expected
+    assert GitManager.DEFAULT_CURATED_REPOS == expected
+    assert DEFAULT_CURATED_REPOS[0] == "bitxwolf/Airllm-tui"
+    assert DEFAULT_CURATED_REPOS[-1] == "bitxwolf/BugHunter"
+    assert len(DEFAULT_CURATED_REPOS) == 5
+
 
 
 

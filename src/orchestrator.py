@@ -39,6 +39,7 @@ class Orchestrator:
         logger: RingBufferLogger,
         bugfinding_agent: Any | None = None,
         fixer_agent: Any | None = None,
+        review_monitor: Any | None = None,
     ):
         self.config = config
         self.db = database
@@ -54,6 +55,38 @@ class Orchestrator:
         self._force_queue_lock = threading.Lock()
         self._bugfinding_agent = bugfinding_agent
         self._fixer_agent = fixer_agent
+        self._review_monitor = review_monitor
+
+    @property
+    def review_monitor(self) -> Any:
+        if self._review_monitor is None:
+            from src.review_monitor import ReviewMonitor
+            self._review_monitor = ReviewMonitor(
+                config=self.config,
+                database=self.db,
+                git_manager=self.git_manager,
+                verifier=self.verifier,
+                key_manager=self.key_manager,
+                aider_runner=getattr(self, "aider_runner", None),
+                logger=self.logger,
+            )
+        return self._review_monitor
+
+    @review_monitor.setter
+    def review_monitor(self, val: Any) -> None:
+        self._review_monitor = val
+
+    def run_remediation_phase(self) -> dict[str, Any]:
+        """Execute review monitor remediation phase safely isolated from scanning."""
+        try:
+            if self.review_monitor:
+                self.logger.log("INFO", "Starting PR review and comment remediation check...")
+                results = self.review_monitor.check_and_remediate_prs()
+                return {"outcome": "SUCCESS", "results": results}
+        except Exception as e:
+            self.logger.log("ERROR", f"PR review remediation encountered an isolated error: {e}")
+            return {"outcome": "ERROR", "error": str(e)}
+        return {"outcome": "SKIPPED"}
 
     @property
     def bugfinding_agent(self) -> Any:
@@ -402,8 +435,28 @@ class Orchestrator:
 
                 subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
                 subprocess.run(["git", "commit", "-m", ver_res.pr_title], cwd=repo_path, check=True, capture_output=True)
-                self.git_manager.push_atomic_branch(repo_path, branch_name, remote=remote_target)
+                actual_remote = self.git_manager.push_atomic_branch(
+                    repo_path, branch_name, remote=remote_target, repo_slug=repo_slug
+                )
+                if actual_remote == "fork":
+                    remote_target = "fork"
+                    head_spec = f"{auth_user}:{branch_name}"
             except Exception as e:
+                err_text = str(e)
+                is_perm_denied = any(s in err_text.lower() for s in ("403", "permission denied", "access denied", "denied to"))
+                if is_perm_denied:
+                    warn_msg = f"Repository {repo_slug} skipped due to token permission denial: {err_text}"
+                    self.logger.log("WARN", warn_msg)
+                    try:
+                        with open(Path("bughunter.log"), "a", encoding="utf-8") as f:
+                            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [WARN] {warn_msg}\n")
+                    except Exception:
+                        pass
+                    self.git_manager.rollback_working_tree(repo_path, default_branch)
+                    self.db.update_repository_status(repo_slug, "SKIPPED_PERMISSION_DENIED", err_text)
+                    self.db.add_scan_log(repo_slug, head_sha, key.id if key else None, "SKIPPED_PERMISSION_DENIED", time.time() - start_time, err_text)
+                    return {"outcome": "SKIPPED_PERMISSION_DENIED", "repo_slug": repo_slug, "error": err_text}
+
                 self.logger.log("ERROR", f"Git commit/push failed: {e}")
                 self.git_manager.rollback_working_tree(repo_path, default_branch)
                 self.db.update_repository_status(repo_slug, "ERROR", str(e))
@@ -496,6 +549,25 @@ class Orchestrator:
                 "head_sha": head_sha
             }
         except Exception as e:
+            err_msg = str(e)
+            is_perm_denied = any(s in err_msg.lower() for s in ("403", "permission denied", "access denied", "denied to"))
+            if is_perm_denied:
+                warn_msg = f"Repository {repo_slug} skipped due to token permission denial: {err_msg}"
+                self.logger.log("WARN", warn_msg)
+                try:
+                    with open(Path("bughunter.log"), "a", encoding="utf-8") as f:
+                        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [WARN] {warn_msg}\n")
+                except Exception:
+                    pass
+                if repo_path and hasattr(repo_path, "exists") and repo_path.exists():
+                    try:
+                        self.git_manager.rollback_working_tree(repo_path, default_branch)
+                    except Exception as rb_err:
+                        self.logger.log("WARN", f"Failed to rollback working tree for {repo_slug}: {rb_err}")
+                self.db.update_repository_status(repo_slug, "SKIPPED_PERMISSION_DENIED", err_msg)
+                self.db.add_scan_log(repo_slug, head_sha, None, "SKIPPED_PERMISSION_DENIED", time.time() - start_time, err_msg)
+                return {"outcome": "SKIPPED_PERMISSION_DENIED", "repo_slug": repo_slug, "error": err_msg}
+
             self.logger.log("ERROR", f"Unhandled exception while scanning repository {repo_slug}: {e}")
             self.db.update_repository_status(repo_slug, "ERROR", str(e))
             if repo_path and hasattr(repo_path, "exists") and repo_path.exists():
@@ -508,6 +580,8 @@ class Orchestrator:
 
     def run_cycle(self) -> list[dict[str, Any]]:
         """Run a single iteration across all target repositories."""
+        self.run_remediation_phase()
+
         results = []
 
         # Process force queue first
@@ -516,15 +590,50 @@ class Orchestrator:
                 if not self.force_queue:
                     break
                 repo_slug = self.force_queue.pop(0)
-            res = self.scan_single_repo(repo_slug, is_force_scan=True)
-            results.append(res)
+            try:
+                res = self.scan_single_repo(repo_slug, is_force_scan=True)
+                results.append(res)
+            except Exception as e:
+                self.logger.log("ERROR", f"Force scan error for {repo_slug}: {e}")
+                results.append({"outcome": "ERROR", "repo_slug": repo_slug, "error": str(e)})
 
         # Process target repositories
         for repo_slug in self.config.target_repos:
             if self.stop_requested:
                 break
-            res = self.scan_single_repo(repo_slug)
-            results.append(res)
+            try:
+                res = self.scan_single_repo(repo_slug)
+                if isinstance(res, dict) and res.get("outcome") == "ERROR":
+                    err_text = str(res.get("error", ""))
+                    if any(s in err_text.lower() for s in ("403", "permission denied", "access denied", "denied to")):
+                        warn_msg = f"Repository {repo_slug} skipped due to token permission denial: {err_text}"
+                        self.logger.log("WARN", warn_msg)
+                        try:
+                            with open(Path("bughunter.log"), "a", encoding="utf-8") as f:
+                                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [WARN] {warn_msg}\n")
+                        except Exception:
+                            pass
+                        self.db.update_repository_status(repo_slug, "SKIPPED_PERMISSION_DENIED", err_text)
+                        self.db.add_scan_log(repo_slug, None, None, "SKIPPED_PERMISSION_DENIED", 0.0, err_text)
+                        res["outcome"] = "SKIPPED_PERMISSION_DENIED"
+                results.append(res)
+            except Exception as e:
+                err_text = str(e)
+                is_perm_denied = any(s in err_text.lower() for s in ("403", "permission denied", "access denied", "denied to"))
+                if is_perm_denied:
+                    warn_msg = f"Repository {repo_slug} skipped due to token permission denial: {err_text}"
+                    self.logger.log("WARN", warn_msg)
+                    try:
+                        with open(Path("bughunter.log"), "a", encoding="utf-8") as f:
+                            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [WARN] {warn_msg}\n")
+                    except Exception:
+                        pass
+                    self.db.update_repository_status(repo_slug, "SKIPPED_PERMISSION_DENIED", err_text)
+                    self.db.add_scan_log(repo_slug, None, None, "SKIPPED_PERMISSION_DENIED", 0.0, err_text)
+                    results.append({"outcome": "SKIPPED_PERMISSION_DENIED", "repo_slug": repo_slug, "error": err_text})
+                else:
+                    self.logger.log("ERROR", f"Error scanning repo {repo_slug}: {e}")
+                    results.append({"outcome": "ERROR", "repo_slug": repo_slug, "error": err_text})
 
         return results
 
@@ -575,63 +684,72 @@ class Orchestrator:
         self.logger.log("INFO", f"Starting Fixer phase across {len(slugs)} repos: {slugs}")
         results = []
         for slug in slugs:
-            repo_path = self.config.repos_dir / slug.replace("/", "__")
-            if not repo_path.exists():
-                repo_path_alt = self.config.repos_dir / slug.split("/")[-1]
-                if repo_path_alt.exists():
-                    repo_path = repo_path_alt
+            try:
+                repo_path = self.config.repos_dir / slug.replace("/", "__")
+                if not repo_path.exists():
+                    repo_path_alt = self.config.repos_dir / slug.split("/")[-1]
+                    if repo_path_alt.exists():
+                        repo_path = repo_path_alt
 
-            if not repo_path.exists():
-                try:
-                    repo_path, _, _ = self.git_manager.sync_repository(slug)
-                except Exception as e:
-                    self.logger.log("WARN", f"Could not sync {slug}: {e}")
-                    results.append({"outcome": "SYNC_FAILED", "repo_slug": slug, "error": str(e)})
+                if not repo_path.exists():
+                    try:
+                        repo_path, _, _ = self.git_manager.sync_repository(slug)
+                    except Exception as e:
+                        self.logger.log("WARN", f"Could not sync {slug}: {e}")
+                        results.append({"outcome": "SYNC_FAILED", "repo_slug": slug, "error": str(e)})
+                        continue
+
+                open_pr_count, skip_files = self.git_manager.get_open_bot_prs(slug, repo_path)
+                if open_pr_count >= self.config.max_open_prs_per_repo:
+                    self.logger.log("INFO", f"Skipping {slug}: open PR count {open_pr_count} >= max {self.config.max_open_prs_per_repo}")
+                    results.append({"outcome": "SKIPPED_MAX_PRS", "repo_slug": slug})
                     continue
 
-            open_pr_count, skip_files = self.git_manager.get_open_bot_prs(slug, repo_path)
-            if open_pr_count >= self.config.max_open_prs_per_repo:
-                self.logger.log("INFO", f"Skipping {slug}: open PR count {open_pr_count} >= max {self.config.max_open_prs_per_repo}")
-                results.append({"outcome": "SKIPPED_MAX_PRS", "repo_slug": slug})
-                continue
+                key = self.key_manager.get_next_healthy_key()
+                if not key:
+                    self.logger.log("WARN", f"No healthy LLM keys available for fixing in {slug}")
+                    results.append({"outcome": "NO_HEALTHY_KEYS", "repo_slug": slug})
+                    continue
 
-            key = self.key_manager.get_next_healthy_key()
-            if not key:
-                self.logger.log("WARN", f"No healthy LLM keys available for fixing in {slug}")
-                results.append({"outcome": "NO_HEALTHY_KEYS", "repo_slug": slug})
-                continue
+                fix_res = self.fixer_agent.fix_next_bug(
+                    repo_slug=slug,
+                    repo_path=repo_path,
+                    skip_files=skip_files,
+                    key_entry=key,
+                    log_callback=lambda msg: self.logger.log("AGENT", msg),
+                )
+                if key:
+                    if fix_res.status == "RATE_LIMIT_429" or "429" in fix_res.status or "RATE_LIMIT" in fix_res.status:
+                        self.key_manager.report_key_failure(
+                            key.id, fix_res.error_message or "429 Rate Limit", status_code=429
+                        )
+                    elif fix_res.status == "QUOTA_EXHAUSTED_402" or "402" in fix_res.status or "QUOTA" in fix_res.status:
+                        self.key_manager.report_key_failure(
+                            key.id, fix_res.error_message or "402 Insufficient Quota", status_code=402
+                        )
+                    elif fix_res.success:
+                        self.key_manager.report_key_success(key.id)
 
-            fix_res = self.fixer_agent.fix_next_bug(
-                repo_slug=slug,
-                repo_path=repo_path,
-                skip_files=skip_files,
-                key_entry=key,
-                log_callback=lambda msg: self.logger.log("AGENT", msg),
-            )
-            if key:
-                if fix_res.status == "RATE_LIMIT_429" or "429" in fix_res.status or "RATE_LIMIT" in fix_res.status:
-                    self.key_manager.report_key_failure(
-                        key.id, fix_res.error_message or "429 Rate Limit", status_code=429
-                    )
-                elif fix_res.status == "QUOTA_EXHAUSTED_402" or "402" in fix_res.status or "QUOTA" in fix_res.status:
-                    self.key_manager.report_key_failure(
-                        key.id, fix_res.error_message or "402 Insufficient Quota", status_code=402
-                    )
-                elif fix_res.success:
-                    self.key_manager.report_key_success(key.id)
-
-            results.append({
-                "outcome": fix_res.status,
-                "repo_slug": slug,
-                "success": fix_res.success,
-                "bug_id": fix_res.bug_id,
-                "target_file": fix_res.target_file,
-                "diff_lines": fix_res.diff_lines,
-                "branch_name": fix_res.branch_name,
-                "head_spec": fix_res.head_spec,
-                "pr_url": fix_res.pr_url,
-                "error": fix_res.error_message,
-            })
+                results.append({
+                    "outcome": fix_res.status,
+                    "repo_slug": slug,
+                    "success": fix_res.success,
+                    "bug_id": fix_res.bug_id,
+                    "target_file": fix_res.target_file,
+                    "diff_lines": fix_res.diff_lines,
+                    "branch_name": fix_res.branch_name,
+                    "head_spec": fix_res.head_spec,
+                    "pr_url": fix_res.pr_url,
+                    "error": fix_res.error_message,
+                })
+            except Exception as e:
+                self.logger.log("ERROR", f"Error during fixer phase for repository {slug}: {e}")
+                results.append({
+                    "outcome": "ERROR",
+                    "repo_slug": slug,
+                    "success": False,
+                    "error": str(e),
+                })
         return results
 
     def run_two_agent_cycle(
@@ -640,6 +758,7 @@ class Orchestrator:
         simulated_tool_outputs: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Execute decoupled two-agent cycle: Bugfinding discovery followed by Main Fixer remediation."""
+        self.run_remediation_phase()
         slugs = repo_slugs or self.bugfinding_agent.get_target_repositories()
         bug_logs = self.run_bugfinding_phase(repo_slugs=slugs, simulated_tool_outputs=simulated_tool_outputs)
         fix_results = self.run_fixer_phase(repo_slugs=slugs)

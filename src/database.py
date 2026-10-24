@@ -151,6 +151,25 @@ class Database:
     CREATE INDEX IF NOT EXISTS idx_pr_repo ON pull_requests(repo_slug);
     CREATE INDEX IF NOT EXISTS idx_key_state ON api_key_status(state);
     CREATE INDEX IF NOT EXISTS idx_scan_repo ON scan_logs(repo_slug);
+
+    CREATE TABLE IF NOT EXISTS review_remediations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT UNIQUE NOT NULL,
+        comment_id TEXT NOT NULL,
+        repo_slug TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        commit_sha TEXT NOT NULL,
+        reviewer TEXT,
+        path TEXT,
+        line INTEGER,
+        feedback_summary TEXT,
+        status TEXT NOT NULL DEFAULT 'RESOLVED',
+        remediated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_rev_rem_thread ON review_remediations(thread_id);
+    CREATE INDEX IF NOT EXISTS idx_rev_rem_repo_pr ON review_remediations(repo_slug, pr_number);
+    CREATE INDEX IF NOT EXISTS idx_rev_rem_comment ON review_remediations(comment_id);
     """
 
     def __init__(self, db_path: str | Path):
@@ -739,4 +758,89 @@ class Database:
                 )
                 return True, reason
         return False, None
+
+    def record_review_remediation(
+        self,
+        thread_id: str,
+        comment_id: str,
+        repo_slug: str,
+        pr_number: int,
+        commit_sha: str,
+        reviewer: str = "",
+        path: str = "",
+        line: int = 0,
+        feedback_summary: str = "",
+        status: str = "RESOLVED",
+    ) -> int:
+        """
+        Record or update a pull request review remediation with strict idempotency.
+        Uses ON CONFLICT(thread_id) DO UPDATE SET ...
+        Returns the row id.
+        """
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO review_remediations (
+                    thread_id, comment_id, repo_slug, pr_number, commit_sha,
+                    reviewer, path, line, feedback_summary, status, remediated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    comment_id = excluded.comment_id,
+                    repo_slug = excluded.repo_slug,
+                    pr_number = excluded.pr_number,
+                    commit_sha = excluded.commit_sha,
+                    reviewer = excluded.reviewer,
+                    path = excluded.path,
+                    line = excluded.line,
+                    feedback_summary = excluded.feedback_summary,
+                    status = excluded.status,
+                    remediated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    thread_id,
+                    comment_id,
+                    repo_slug,
+                    pr_number,
+                    commit_sha,
+                    reviewer,
+                    path,
+                    line,
+                    feedback_summary,
+                    status,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM review_remediations WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+            return int(row["id"]) if row else 0
+
+    def is_thread_remediated(self, thread_id: str) -> bool:
+        """Check if a review thread has already been remediated."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM review_remediations WHERE thread_id = ? LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+            return row is not None
+
+    def get_review_remediations(
+        self,
+        repo_slug: Optional[str] = None,
+        pr_number: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve review remediations optionally filtered by repo_slug and pr_number."""
+        query = "SELECT * FROM review_remediations WHERE 1=1"
+        params: list[Any] = []
+        if repo_slug:
+            query += " AND repo_slug = ?"
+            params.append(repo_slug)
+        if pr_number is not None:
+            query += " AND pr_number = ?"
+            params.append(pr_number)
+        query += " ORDER BY id DESC"
+        with self.get_connection() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
 

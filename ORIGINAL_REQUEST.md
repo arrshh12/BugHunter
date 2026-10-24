@@ -298,3 +298,43 @@ Implement an automated test suite (`tests/` or equivalent) covering:
 ## Follow-up — 2026-10-23T19:44:56Z
 
 there was an interuption/connection error finish without flaws
+
+## Follow-up — 2026-10-24T17:20:24Z
+
+Fix the AutoBugHunter multi-repo PR creation pipeline and implement an autonomous PR review and comment remediation engine without breaking existing features.
+
+Working directory: c:\antigravity\bughunter
+Integrity mode: development
+
+## Requirements
+
+### R1. Multi-Repo Discovery, Push/Fork Resilience & Logging
+- In `src/git_manager.py` (`discover_or_load_repos`): When `auto_discover=True`, ensure `gh repo list` queries `bitxwolf` explicitly (`gh repo list bitxwolf --limit 100 --json nameWithOwner,name,isFork,isArchived,createdAt`).
+- Ensure `DEFAULT_CURATED_REPOS` ordering has `bitxwolf/BugHunter` as priority 6 (scanned last) and is properly iterated in `main.py` and `src/orchestrator.py` without premature loop exit if an individual repo fails.
+- In `push_atomic_branch` & `ensure_fork`: When direct push to `bitxwolf/<repo>` fails due to permission denial (HTTP 403), automatically fork the repo to authenticated user (`arrshh12`), push to `fork`, and open PR using cross-fork `head_spec` `<fork_user>:<branch>`.
+- Provide descriptive logging in `bughunter.log` if a repository is skipped due to token permission denials.
+
+### R2. PR Review & Comment Remediation Engine
+- Create `src/review_monitor.py` implementing `check_and_remediate_prs()` executed at the beginning of each cycle before opening new PRs.
+- Query open bot PRs across target repos (`gh pr list --repo <repo_slug> --author "@me" --state open`).
+- Fetch unresolved review comments and pull request reviews from bots (`coderabbitai[bot]`, `code-review-bot`) and human reviewers via GitHub GraphQL API.
+- Extract `comment_id`, `thread_id`, `path`, `line`, `diff_hunk`, and comment body.
+- For each actionable comment: checkout PR branch, invoke LLM for root-cause analysis and minimal non-breaking patch, verify patch via `src/verifier.py`, commit (`fix(review): address feedback from CodeRabbit on <filename>`), push without force-push (`RULE-GIT-02`).
+- Post inline reply: `"Noted and addressed in commit <short_sha>. Verified and resolved."`.
+- Resolve review thread via GraphQL mutation `resolveReviewThread(input: {threadId: $threadId})`.
+- Persist remediated threads in SQLite database table `review_remediations` for strict idempotency.
+
+### R3. Non-Breaking Safety Protocol & Invariant Enforcement
+- Strict zero-regression guarantee: all 779 baseline tests in `pytest tests/` must remain 100% passing.
+- Absolute prohibition of `git push --force` (`RULE-GIT-02`).
+- Full backward compatibility for CLI arguments (`--once`, `--repo`, `--max-cycles`, `--backup-state`), environment variables, database schemas, and FastAPI endpoints.
+- Robust exception isolation: permission denials and GraphQL resolution failures must be logged cleanly and never crash the orchestrator daemon.
+
+## Acceptance Criteria
+
+### Automated Test Verification
+- [ ] New unit and integration test suite in `tests/test_review_monitor.py` passes completely.
+- [ ] Full existing test suite (`pytest`) passes all 779 tests with 0 regressions.
+- [ ] Cross-fork `head_spec` generation and fallback verified in tests.
+- [ ] Thread resolution GraphQL call and reply posting verified in tests.
+- [ ] Idempotency verified: re-running review remediation skips already addressed threads.

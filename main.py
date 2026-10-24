@@ -129,7 +129,7 @@ def main(args_list: Optional[list[str]] = None):
                 total_prs_created += prs_in_cycle
                 active_repos = sum(
                     1 for r in results
-                    if r.get("outcome") not in ("SKIPPED_MAX_PRS", "SKIPPED_EXHAUSTED", "CLEAN_EXHAUSTED")
+                    if r.get("outcome") not in ("SKIPPED_MAX_PRS", "SKIPPED_EXHAUSTED", "CLEAN_EXHAUSTED", "SKIPPED_PERMISSION_DENIED")
                 )
                 ring_logger.log("INFO", f"Cycle {cycle_idx} complete: {prs_in_cycle} PRs created. Active repos: {active_repos}.")
                 if active_repos == 0:
