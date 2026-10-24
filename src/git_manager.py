@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 REPO_SLUG_REGEX = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$")
 
@@ -54,7 +54,7 @@ class GitManager:
         if self.github_token:
             scrubbed = scrubbed.replace(self.github_token, "[REDACTED]")
             try:
-                auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
+                auth_bytes = f"x-access-token:{self.github_token}".encode()
                 auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
                 scrubbed = scrubbed.replace(auth_b64, "[REDACTED]")
                 token_b64 = base64.b64encode(self.github_token.encode("utf-8")).decode("ascii")
@@ -80,9 +80,12 @@ class GitManager:
 
     def configure_git_and_gh(self) -> None:
         """Configure global git bot identity and authenticate GitHub CLI."""
+        auth_user = self.get_authenticated_user() or "arrshh12"
+        user_name = auth_user
+        user_email = f"{auth_user}@users.noreply.github.com"
         try:
-            subprocess.run(["git", "config", "--global", "user.name", "AutoBugHunter[bot]"], check=False, capture_output=True)
-            subprocess.run(["git", "config", "--global", "user.email", "autobughunter[bot]@users.noreply.github.com"], check=False, capture_output=True)
+            subprocess.run(["git", "config", "--global", "user.name", user_name], check=False, capture_output=True)
+            subprocess.run(["git", "config", "--global", "user.email", user_email], check=False, capture_output=True)
         except Exception:
             pass
 
@@ -100,8 +103,8 @@ class GitManager:
             except Exception:
                 pass
 
-    def get_authenticated_user(self) -> Optional[str]:
-        """Return authenticated GitHub username using gh CLI or cached identity."""
+    def get_authenticated_user(self) -> str | None:
+        """Return authenticated GitHub username using gh CLI or cached identity with REST fallback."""
         if not self.github_token:
             return None
         if hasattr(self, "_cached_auth_user") and self._cached_auth_user:
@@ -122,6 +125,30 @@ class GitManager:
                     return user
             except Exception:
                 pass
+
+        # Fallback to direct REST API call if gh CLI is unavailable or fails
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {self.github_token}",
+                    "User-Agent": "AutoBugHunter-GitManager",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                user = data.get("login")
+                if user:
+                    self._cached_auth_user = user
+                    return user
+        except Exception:
+            pass
+
+        if self.github_token:
+            self._cached_auth_user = "arrshh12"
+            return "arrshh12"
+
         return None
 
     def has_push_access(self, repo_slug: str) -> bool:
@@ -146,7 +173,7 @@ class GitManager:
                 pass
         return False
 
-    def ensure_fork(self, repo_slug: str) -> Optional[str]:
+    def ensure_fork(self, repo_slug: str) -> str | None:
         """Ensure a fork of repo_slug exists under authenticated user's account, returning fork slug."""
         validate_repo_slug(repo_slug)
         auth_user = self.get_authenticated_user()
@@ -319,7 +346,7 @@ class GitManager:
             return fallback
         return list(self.DEFAULT_CURATED_REPOS)
 
-    def sync_repository(self, repo_slug: str, existing_path: Optional[Path] = None, allow_init: Optional[bool] = None) -> tuple[Path, str, str]:
+    def sync_repository(self, repo_slug: str, existing_path: Path | None = None, allow_init: bool | None = None) -> tuple[Path, str, str]:
         """Hard-reset sync working tree to origin default branch, returning (repo_path, default_branch, head_sha)."""
         validate_repo_slug(repo_slug)
         target_path = existing_path or (self.repos_dir / repo_slug.replace("/", "__"))
@@ -331,7 +358,7 @@ class GitManager:
             clean_clone_url = f"https://github.com/{repo_slug}.git"
             clone_cmd = ["git"]
             if self.github_token:
-                auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
+                auth_bytes = f"x-access-token:{self.github_token}".encode()
                 auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
                 clone_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
             clone_cmd.extend(["clone", clean_clone_url, str(target_path)])
@@ -357,8 +384,9 @@ class GitManager:
             if not cloned:
                 if "PYTEST_CURRENT_TEST" in os.environ and allow_init is not False:
                     subprocess.run(["git", "init", "-b", "main"], cwd=target_path, check=True, capture_output=True)
-                    subprocess.run(["git", "config", "user.name", "AutoBugHunter[bot]"], cwd=target_path, check=True, capture_output=True)
-                    subprocess.run(["git", "config", "user.email", "autobughunter[bot]@users.noreply.github.com"], cwd=target_path, check=True, capture_output=True)
+                    auth_user = self.get_authenticated_user() or "arrshh12"
+                    subprocess.run(["git", "config", "user.name", auth_user], cwd=target_path, check=True, capture_output=True)
+                    subprocess.run(["git", "config", "user.email", f"{auth_user}@users.noreply.github.com"], cwd=target_path, check=True, capture_output=True)
                     readme = target_path / "README.md"
                     if not readme.exists():
                         readme.write_text(f"# {repo_slug}\n", encoding="utf-8")
@@ -403,7 +431,7 @@ class GitManager:
         subprocess.run(["git", "checkout", default_branch], cwd=target_path, check=False, capture_output=True)
         pull_cmd = ["git"]
         if self.github_token:
-            auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
+            auth_bytes = f"x-access-token:{self.github_token}".encode()
             auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
             pull_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
         pull_cmd.extend(["pull", "--ff-only", "origin", default_branch])
@@ -434,7 +462,7 @@ class GitManager:
         self,
         repo_slug: str,
         repo_path: Path,
-        simulated_open_prs: Optional[list[dict[str, Any]]] = None
+        simulated_open_prs: list[dict[str, Any]] | None = None
     ) -> tuple[int, list[str]]:
         """Query open PRs authored by bot, write .skip_files.txt, and return (count, skip_files)."""
         validate_repo_slug(repo_slug)
@@ -473,13 +501,13 @@ class GitManager:
                 elif isinstance(f, str) and f:
                     skip_files.add(f)
 
-        sorted_skip = sorted(list(skip_files))
+        sorted_skip = sorted(skip_files)
         skip_file_path = repo_path / ".skip_files.txt"
         skip_file_path.write_text("\n".join(sorted_skip), encoding="utf-8")
 
         return len(prs), sorted_skip
 
-    def create_atomic_branch(self, repo_path: Path, prefix: str = "auto", scope: Optional[str] = None) -> str:
+    def create_atomic_branch(self, repo_path: Path, prefix: str = "auto", scope: str | None = None) -> str:
         """Create and checkout isolated branch matching RULE-GIT-01: fix/<prefix>-[<scope>-]<repo_short>-<hex6>."""
         repo_short = repo_path.name[:8]
         hex6 = f"{int(time.time() * 1000) % 0xFFFFFF:06x}"
@@ -507,7 +535,7 @@ class GitManager:
         try:
             push_cmd = ["git"]
             if self.github_token:
-                auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
+                auth_bytes = f"x-access-token:{self.github_token}".encode()
                 auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
                 push_cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
             push_cmd.extend(["push", remote, branch_name])

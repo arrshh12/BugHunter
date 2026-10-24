@@ -244,3 +244,57 @@ Replace raw substring `"429"` in `RATE_LIMIT_SIGNATURES` / line scanner with wor
 
 accorfing to @[conversation:"Full Project Bug Scan Schedule"]  only 6/25 bugs re fixed 
 #task fix them fully
+
+
+## 2026-10-23T18:47:50Z
+
+Refactor the AutoBugHunter remediation pipeline to decouple bug discovery and planning (via modular skills in `src/bughunter_agent.py`) from code editing (via `src/aider_runner.py`), updating all model configurations and fallback headers from `longcat-preview` to `gpt-6-luna` pointing to the ScaleMax endpoint `https://api.scalemax.pro/v1`.
+
+Working directory: c:/antigravity/bughunter
+Integrity mode: development
+
+## Requirements
+
+### R1. Modular BugHunter Agent with Skills
+Refactor/create `src/bughunter_agent.py` to decouple bug triage and patch planning from code editing through modular skills:
+- **Static Analysis & Triage Skill**: Parse findings from Flake8, ESLint, Bandit, Semgrep, and Trivy; deduplicate identical issues and rank by severity and blast radius.
+- **Context Extraction Skill**: Extract only relevant functions, classes, and immediate imports rather than passing entire files.
+- **Patch Planning Skill**: Formulate surgical step-by-step patch instructions for Aider adhering strictly to One Bug = One PR and a <=150 lines diff ceiling.
+
+### R2. Aider Execution Runner
+Implement `src/aider_runner.py` wrapping `aider-chat`:
+- Support headless execution (CLI or Python API) with arguments:
+  `aider --model openai/gpt-6-luna --openai-api-base https://api.scalemax.pro/v1 --openai-api-key "$ACTIVE_KEY" --yes --no-auto-commits --edit-format diff --message "$PATCH_INSTRUCTION" path/to/target_file.py`
+- Expose a clean execution interface to accept a target file and patch plan from BugHunter and return exit code, diff output, and status.
+
+### R3. Model Shift & ScaleMax Configuration
+- Update all model identifiers from `longcat-preview` to `gpt-6-luna` (and `openai/gpt-6-luna` for LiteLLM/Aider compatibility).
+- Configure base URL to `https://api.scalemax.pro/v1`.
+- Ensure `OPENAI_API_BASE=https://api.scalemax.pro/v1` is propagated in the process environment.
+- Extract API keys dynamically from `LLM_KEYS_POOL` or `OPENAI_API_KEY`.
+
+### R4. Test Suite and Verification
+Implement an automated test suite (`tests/` or equivalent) covering:
+- Parsing, ranking, and deduplication of findings in the Triage Skill.
+- Accurate AST/text slicing in the Context Extraction Skill.
+- Enforcement of <=150 line ceiling and patch prompt formatting in the Patch Planning Skill.
+- Execution runner argument construction and exit code handling with mocked Aider processes.
+
+## Acceptance Criteria
+
+### Automated Tests
+- [ ] `pytest` runs and all tests pass with zero failures.
+- [ ] Unit tests verify Flake8, ESLint, Bandit, Semgrep, and Trivy parsers.
+- [ ] Unit tests verify context extraction isolates target scope without full file dumps.
+- [ ] Unit tests verify patch planner generates valid Aider instructions enforcing <=150 lines limit.
+- [ ] Unit tests verify `aider_runner` builds the correct CLI args / environment variables and handles subprocess return codes.
+
+### Code Quality & Standards
+- [ ] All new and modified Python files pass lint and syntax validation.
+- [ ] No remaining references to `longcat-preview` across the codebase configuration.
+- [ ] Environment variables and keys are safely accessed without hardcoding secrets.
+
+
+## Follow-up — 2026-10-23T19:44:56Z
+
+there was an interuption/connection error finish without flaws

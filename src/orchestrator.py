@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from src.code_graph import CodeGraphEngine
 from src.config import Config
@@ -37,6 +37,8 @@ class Orchestrator:
         openhands_runner: OpenHandsRunner,
         verifier: Verifier,
         logger: RingBufferLogger,
+        bugfinding_agent: Any | None = None,
+        fixer_agent: Any | None = None,
     ):
         self.config = config
         self.db = database
@@ -50,6 +52,34 @@ class Orchestrator:
         self.stop_requested: bool = False
         self.force_queue: list[str] = []
         self._force_queue_lock = threading.Lock()
+        self._bugfinding_agent = bugfinding_agent
+        self._fixer_agent = fixer_agent
+
+    @property
+    def bugfinding_agent(self) -> Any:
+        if self._bugfinding_agent is None:
+            from src.bugfinding_agent import BugfindingAgent
+            self._bugfinding_agent = BugfindingAgent(config=self.config)
+        return self._bugfinding_agent
+
+    @bugfinding_agent.setter
+    def bugfinding_agent(self, val: Any) -> None:
+        self._bugfinding_agent = val
+
+    @property
+    def fixer_agent(self) -> Any:
+        if self._fixer_agent is None:
+            from src.fixer_agent import MainFixerAgent
+            self._fixer_agent = MainFixerAgent(
+                config=self.config,
+                git_manager=self.git_manager,
+                verifier=self.verifier,
+            )
+        return self._fixer_agent
+
+    @fixer_agent.setter
+    def fixer_agent(self, val: Any) -> None:
+        self._fixer_agent = val
 
     def toggle_pause(self) -> bool:
         """Toggle pause flag for autonomous scanning cycle."""
@@ -68,20 +98,20 @@ class Orchestrator:
     def scan_single_repo(
         self,
         repo_slug: str,
-        simulated_agent_outcome: Optional[str] = None,
-        simulated_open_prs: Optional[list[dict[str, Any]]] = None,
-        custom_diff: Optional[str] = None,
+        simulated_agent_outcome: str | None = None,
+        simulated_open_prs: list[dict[str, Any]] | None = None,
+        custom_diff: str | None = None,
         is_force_scan: bool = False,
-        simulated_findings: Optional[list[dict[str, Any]]] = None,
+        simulated_findings: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Execute a full single repository audit cycle across all stages."""
         if self.paused and not is_force_scan:
             return {"outcome": "PAUSED", "repo_slug": repo_slug}
 
         start_time = time.time()
-        repo_path: Optional[Path] = None
+        repo_path: Path | None = None
         default_branch = "main"
-        head_sha: Optional[str] = None
+        head_sha: str | None = None
 
         try:
             self.logger.log("SYNC", f"Selecting repository {repo_slug}")
@@ -138,7 +168,7 @@ class Orchestrator:
                     self.logger.log("WARN", f"Failed to parse static findings for {repo_slug}: {e}")
                     findings = []
 
-            top_finding: Optional[dict[str, Any]] = None
+            top_finding: dict[str, Any] | None = None
             candidate_count = 0
             skipped_count = 0
             if findings:
@@ -206,7 +236,7 @@ class Orchestrator:
             if not resolved_task_prompt.exists():
                 resolved_task_prompt = Path("prompts/task_prompt.txt").resolve()
             task_prompt_path = resolved_task_prompt
-            prompt_override_file: Optional[Path] = None
+            prompt_override_file: Path | None = None
 
             if top_finding and top_finding.get("file"):
                 target_file = str(top_finding.get("file"))
@@ -349,11 +379,12 @@ class Orchestrator:
             except Exception:
                 has_fork_remote = False
 
+            auth_user = self.git_manager.get_authenticated_user() or "arrshh12"
             if has_fork_remote:
                 remote_target = "fork"
-                auth_user = self.git_manager.get_authenticated_user()
-                if auth_user:
-                    head_spec = f"{auth_user}:{branch_name}"
+                head_spec = f"{auth_user}:{branch_name}"
+            elif repo_slug.lower().startswith("bitxwolf/"):
+                head_spec = f"{auth_user}:{branch_name}"
 
             # Stage and commit
             try:
@@ -370,7 +401,7 @@ class Orchestrator:
                             f.write("\n# automated fix\n")
 
                 subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
-                commit_res = subprocess.run(["git", "commit", "-m", ver_res.pr_title], cwd=repo_path, check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", ver_res.pr_title], cwd=repo_path, check=True, capture_output=True)
                 self.git_manager.push_atomic_branch(repo_path, branch_name, remote=remote_target)
             except Exception as e:
                 self.logger.log("ERROR", f"Git commit/push failed: {e}")
@@ -510,7 +541,7 @@ class Orchestrator:
         repo_path: Path,
         key: Any,
         task_prompt_path: Path,
-        simulated_agent_outcome: Optional[str] = None,
+        simulated_agent_outcome: str | None = None,
     ) -> Any:
         """Alias / helper executing OpenHands session."""
         return self.openhands.run_openhands_session(
@@ -520,4 +551,100 @@ class Orchestrator:
             log_callback=lambda msg: self.logger.log("AGENT", msg),
             simulated_outcome=simulated_agent_outcome,
         )
+
+    def run_bugfinding_phase(
+        self,
+        repo_slugs: list[str] | None = None,
+        simulated_tool_outputs: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Path]:
+        """Execute static bug discovery phase across selected repositories."""
+        slugs = repo_slugs or self.bugfinding_agent.get_target_repositories()
+        self.logger.log("INFO", f"Starting Bugfinding phase across {len(slugs)} repos: {slugs}")
+        return self.bugfinding_agent.scan_repositories(
+            repo_slugs=slugs,
+            repos_dir=self.config.repos_dir,
+            simulated_tool_outputs=simulated_tool_outputs,
+        )
+
+    def run_fixer_phase(
+        self,
+        repo_slugs: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Execute Main Fixer remediation phase consuming Bug-log.md backlogs."""
+        slugs = repo_slugs or self.bugfinding_agent.get_target_repositories()
+        self.logger.log("INFO", f"Starting Fixer phase across {len(slugs)} repos: {slugs}")
+        results = []
+        for slug in slugs:
+            repo_path = self.config.repos_dir / slug.replace("/", "__")
+            if not repo_path.exists():
+                repo_path_alt = self.config.repos_dir / slug.split("/")[-1]
+                if repo_path_alt.exists():
+                    repo_path = repo_path_alt
+
+            if not repo_path.exists():
+                try:
+                    repo_path, _, _ = self.git_manager.sync_repository(slug)
+                except Exception as e:
+                    self.logger.log("WARN", f"Could not sync {slug}: {e}")
+                    results.append({"outcome": "SYNC_FAILED", "repo_slug": slug, "error": str(e)})
+                    continue
+
+            open_pr_count, skip_files = self.git_manager.get_open_bot_prs(slug, repo_path)
+            if open_pr_count >= self.config.max_open_prs_per_repo:
+                self.logger.log("INFO", f"Skipping {slug}: open PR count {open_pr_count} >= max {self.config.max_open_prs_per_repo}")
+                results.append({"outcome": "SKIPPED_MAX_PRS", "repo_slug": slug})
+                continue
+
+            key = self.key_manager.get_next_healthy_key()
+            if not key:
+                self.logger.log("WARN", f"No healthy LLM keys available for fixing in {slug}")
+                results.append({"outcome": "NO_HEALTHY_KEYS", "repo_slug": slug})
+                continue
+
+            fix_res = self.fixer_agent.fix_next_bug(
+                repo_slug=slug,
+                repo_path=repo_path,
+                skip_files=skip_files,
+                key_entry=key,
+                log_callback=lambda msg: self.logger.log("AGENT", msg),
+            )
+            if key:
+                if fix_res.status == "RATE_LIMIT_429" or "429" in fix_res.status or "RATE_LIMIT" in fix_res.status:
+                    self.key_manager.report_key_failure(
+                        key.id, fix_res.error_message or "429 Rate Limit", status_code=429
+                    )
+                elif fix_res.status == "QUOTA_EXHAUSTED_402" or "402" in fix_res.status or "QUOTA" in fix_res.status:
+                    self.key_manager.report_key_failure(
+                        key.id, fix_res.error_message or "402 Insufficient Quota", status_code=402
+                    )
+                elif fix_res.success:
+                    self.key_manager.report_key_success(key.id)
+
+            results.append({
+                "outcome": fix_res.status,
+                "repo_slug": slug,
+                "success": fix_res.success,
+                "bug_id": fix_res.bug_id,
+                "target_file": fix_res.target_file,
+                "diff_lines": fix_res.diff_lines,
+                "branch_name": fix_res.branch_name,
+                "head_spec": fix_res.head_spec,
+                "pr_url": fix_res.pr_url,
+                "error": fix_res.error_message,
+            })
+        return results
+
+    def run_two_agent_cycle(
+        self,
+        repo_slugs: list[str] | None = None,
+        simulated_tool_outputs: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Execute decoupled two-agent cycle: Bugfinding discovery followed by Main Fixer remediation."""
+        slugs = repo_slugs or self.bugfinding_agent.get_target_repositories()
+        bug_logs = self.run_bugfinding_phase(repo_slugs=slugs, simulated_tool_outputs=simulated_tool_outputs)
+        fix_results = self.run_fixer_phase(repo_slugs=slugs)
+        return {
+            "bug_logs": bug_logs,
+            "fix_results": fix_results,
+        }
 

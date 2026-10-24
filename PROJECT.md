@@ -151,6 +151,15 @@ Autonomous, containerized daemon running on Oracle Cloud Free Tier ARM64 (`linux
 | 76 | Oracle Cloud ARM64 Deploy Script | `scripts/deploy_oracle_arm64.sh` configuring Docker, iptables port 8080, and startup | M6 | explorer_survey_1, R5 |
 | 77 | Full E2E Test Suite (Tiers 1-4) | Comprehensive test suite verifying all features opaque-box | M7 | Dual Track, Acceptance Criteria |
 | 78 | Adversarial Coverage Hardening (Tier 5) | White-box stress testing, gap analysis, and robustness hardening | M7 | Project Pattern |
+| 79 | Multi-Scanner Ingestion & Proximity Clustering | `src/bugfinding_agent.py`: Ingests Flake8, ESLint, Bandit, Semgrep, Trivy findings and clusters within $\pm 2$ lines | TAM1 | R1, explorer_arch_1 |
+| 80 | Per-Repo Bug-log.md Generation & State Retention | `src/bugfinding_agent.py`: Formats task checkboxes, retains `DONE` items on re-scans, protects via `.git/info/exclude` | TAM1 | R1, explorer_arch_2 |
+| 81 | Zero Static Scanning Backlog Consumption | `src/fixer_agent.py`: Parses `Bug-log.md` with zero static scanners invoked during fix operations | TAM2 | R2, explorer_arch_1 |
+| 82 | Surgical AST Context & Patch Planning | `src/fixer_agent.py`: Extracts symbol slice via AST and formulates plan enforcing One Bug = One PR, $\le 150$ diff lines | TAM2 | R2, explorer_arch_1 |
+| 83 | Headless Aider Remediation Engine | `src/fixer_agent.py`: Headless patch execution with `openai/gpt-6-luna` pointing to `https://api.scalemax.pro/v1` | TAM2 | R2, explorer_arch_1 |
+| 84 | Verification Gate & In-Place Atomic Mutation | `src/fixer_agent.py`: Verifies diff bounds ($\le 3$ files, $\le 150$ lines) and mutates item to `- [x] ... (DONE)` atomically | TAM3 | R3, explorer_arch_2 |
+| 85 | Fix Audit Ledger Append (`logs.md`) | `src/fixer_agent.py`: Thread-safe append of ISO 8601 UTC timestamp, slug, bug ID, diff lines, branch, and PR status | TAM3 | R3, explorer_arch_2 |
+| 86 | Dedicated Bot Account Identity (`arrshh12`) | `src/git_manager.py`, `src/fixer_agent.py`: Resolves `arrshh12` bot identity and formats `head_spec=arrshh12:<branch>` | TAM3 | User Directive |
+| 87 | Orchestrator Two-Agent Cycle Integration | `src/orchestrator.py`: Orchestrates decoupled discovery (`run_bugfinding_phase`) and remediation (`run_fixer_phase`) | TAM4 | R4, explorer_arch_2 |
 
 ---
 
@@ -165,6 +174,24 @@ Autonomous, containerized daemon running on Oracle Cloud Free Tier ARM64 (`linux
 | M5 | Orchestrator Continuous Loop & PR Dispatcher | `src/orchestrator.py` (24/7 continuous cycle, state transitions, branch checkout, commit, push, `gh pr create` dispatch with template, `fully_exhausted` logic, scan logs recording) | M1, M2, M3, M4 | DONE |
 | M6 | Mission Control UI & ARM64 Container Packaging | `src/web_server.py` (FastAPI app, `/`, `/api/state`, `/api/control/*`, `/ws/logs`), `src/templates/dashboard.html` (cyber-ops dark theme, Tailwind CDN, Lucide CDN, responsive grid), `main.py` (dual-thread entrypoint), `Dockerfile`, `docker-compose.yml` (20GB RAM limit), and `scripts/deploy_oracle_arm64.sh` | M1, M2, M3, M4, M5 | DONE |
 | M7 | Final E2E Suite Pass & Adversarial Hardening | Phase 1: 100% pass rate on E2E test suite (Tiers 1-4). Phase 2: Adversarial coverage hardening (Tier 5) with Challengers | M1-M6, TEST_READY.md | DONE |
+
+## AutoBugHunter Remediation Pipeline Refactor Milestones (R1-R4)
+
+| # | Name | Scope | Dependencies | Status |
+|---|------|-------|-------------|--------|
+| RM1 | Model Shift & ScaleMax Configuration (R3) | `src/config.py`, `src/openhands_runner.py`, `.env.example`, `tests/test_config_scalemax.py`. Shift all default and fallback models from `longcat-preview` to `openai/gpt-6-luna`, base URL to `https://api.scalemax.pro/v1`, dynamic key pool loading, and subprocess env propagation. | none | DONE |
+| RM2 | Modular BugHunter Agent with Skills (R1) | `src/bughunter_agent.py`, `tests/test_bughunter_agent.py`. Implemented modular skills: `TriageSkill` (multi-scanner parsing for Flake8, ESLint, Bandit, Semgrep, Trivy, $\pm 2$ proximity clustering, 5-axis ranking), `ContextExtractionSkill` (surgical AST extraction with decorator preservation and fallback), `PatchPlanningSkill` (One Bug = One PR, $\le 150$ lines diff, $\le 3$ files). | RM1 | DONE |
+| RM3 | Aider Execution Runner (R2) | `src/aider_runner.py`, `tests/test_aider_runner.py`. Headless CLI wrapper for `aider`, process tree isolation via `psutil` + `taskkill` / `os.killpg`, rate limit false positive sanitization (excluding ports, line numbers, commit hashes), `stdin=subprocess.DEVNULL`, and bounded diff hunk extraction. | RM1, RM2 | DONE |
+| RM4 | Comprehensive Test Suite & E2E Verification (R4) | `tests/test_e2e_remediation.py`, `tests/test_e2e_pipeline_boundaries_adversarial.py`, `tests/test_adversarial_stress_m4.py`. Full pipeline integration, resilience, 100% full repo test pass (735 passed, 0 failures), zero `longcat` references, clean compilation and linting, zero integrity violations. | RM1, RM2, RM3 | DONE |
+
+## Two-Agent "Bug-Hunter" Architecture Milestones (TAM1-TAM4)
+
+| # | Name | Scope | Dependencies | Status |
+|---|------|-------|-------------|--------|
+| TAM1 | Bugfinding Agent & Per-Repo Bug-log.md Generation (R1) | `src/bugfinding_agent.py`. Autonomous discovery across 5 repos, multi-scanner triage (Flake8, ESLint, Bandit, Semgrep, Trivy), $\pm 2$ lines proximity clustering, 5-axis ranking, `Bug-log.md` task checkbox generation, state retention of `DONE` items on re-scans, `.git/info/exclude` safety. | RM2 | DONE |
+| TAM2 | Main Fixer Agent with Direct Backlog Consumption & Zero Static Scanning (R2) | `src/fixer_agent.py`. Consumes pending bugs directly from `Bug-log.md` with strict zero static scanning invariant, AST context extraction via `ContextExtractionSkill`, surgical patch planning via `PatchPlanningSkill`, headless Aider execution with `openai/gpt-6-luna` at `https://api.scalemax.pro/v1`. | RM3, TAM1 | DONE |
+| TAM3 | Backlog Mutation, Audit Ledger & Dedicated Bot Identity (R3) | `src/fixer_agent.py`, `src/git_manager.py`, `logs.md`. In-place atomic update of `Bug-log.md` to `DONE`, thread-safe append to `logs.md` audit ledger, resolution of `arrshh12` bot identity, and formatting `head_spec=arrshh12:<branch>`. | TAM2 | DONE |
+| TAM4 | Orchestrator Integration & Comprehensive Test Suite (R4) | `src/orchestrator.py`, `tests/test_two_agent_architecture.py`. Master integration (`run_two_agent_cycle`, `run_bugfinding_phase`, `run_fixer_phase`) preserving 100% backward compatibility, comprehensive 6-class automated test suite (15 passed), zero regressions across full test suite. | TAM1, TAM2, TAM3 | DONE |
 
 ---
 
@@ -309,6 +336,10 @@ c:\antigravity\bughunter\
 │   ├── openhands_runner.py               # Headless OpenHands process runner
 │   ├── verifier.py                       # Verification gate & secret sanitizer
 │   ├── orchestrator.py                   # 24/7 scanning loop & PR dispatcher
+│   ├── bughunter_agent.py                # Modular skills (Triage, Context, Patch)
+│   ├── bugfinding_agent.py               # BugfindingAgent multi-scanner discovery
+│   ├── fixer_agent.py                    # MainFixerAgent zero-scanner remediation
+│   ├── aider_runner.py                   # Headless Aider runner (gpt-6-luna)
 │   ├── web_server.py                     # FastAPI Mission Control dashboard API
 │   └── templates/
 │       └── dashboard.html                # Cyber-Ops dark theme dashboard
@@ -330,5 +361,8 @@ c:\antigravity\bughunter\
     ├── test_openhands_runner.py          # Process isolation & timeout tests
     ├── test_verifier.py                  # Verification gate & secret regex tests
     ├── test_orchestrator.py              # Scanning loop & PR dispatch tests
-    └── test_web_server.py                # Dashboard API & WebSocket tests
+    ├── test_web_server.py                # Dashboard API & WebSocket tests
+    ├── test_aider_runner.py              # Headless Aider runner tests
+    ├── test_bughunter_agent.py           # Modular skills tests
+    └── test_two_agent_architecture.py    # Comprehensive two-agent architecture suite
 ```

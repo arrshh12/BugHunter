@@ -111,6 +111,9 @@ class OpenHandsRunner:
         env["LLM_BASE_URL"] = key_entry.base_url
         env["LLM_MODEL"] = key_entry.model
         env["LLM_API_KEY"] = key_entry.api_key
+        env["OPENAI_API_BASE"] = key_entry.base_url or "https://api.scalemax.pro/v1"
+        env["OPENAI_BASE_URL"] = key_entry.base_url or "https://api.scalemax.pro/v1"
+        env["OPENAI_API_KEY"] = key_entry.api_key
         env["RUNTIME"] = self.runtime
         env["WORKSPACE_BASE"] = str(repo_path)
         return env

@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from dotenv import dotenv_values
 
@@ -58,13 +58,16 @@ class Config:
     db_path: Path = field(default_factory=lambda: Path.cwd() / "state" / "bughunter.sqlite")
     log_file_path: Path = field(default_factory=lambda: Path.cwd() / "state" / "bughunter.log")
     log_ring_buffer_size: int = 500
+    openai_api_base: str = "https://api.scalemax.pro/v1"
+    openai_api_key: str = ""
+    llm_model: str = "openai/gpt-6-luna"
 
     @classmethod
     def load(
         cls,
-        env_file: Optional[Path] = None,
-        overrides: Optional[dict[str, Any]] = None,
-    ) -> "Config":
+        env_file: Path | None = None,
+        overrides: dict[str, Any] | None = None,
+    ) -> Config:
         """Load configuration from .env file, environment variables, and programmatic overrides."""
         env_vars: dict[str, str] = {}
 
@@ -87,20 +90,38 @@ class Config:
         if overrides:
             for k, v in overrides.items():
                 env_vars[k] = v
+                env_vars[k.upper()] = v
+                env_vars[k.lower()] = v
 
         def get_val(key: str, default: Any = None) -> Any:
-            return env_vars.get(key, default)
+            if key in env_vars:
+                return env_vars[key]
+            if key.lower() in env_vars:
+                return env_vars[key.lower()]
+            if key.upper() in env_vars:
+                return env_vars[key.upper()]
+            return default
 
         # Workspace and directory resolution
+        ws_in_overrides = bool(overrides and any(k.lower() == "workspace_dir" for k in overrides))
+        repos_in_overrides = bool(overrides and any(k.lower() == "repos_dir" for k in overrides))
+        state_in_overrides = bool(overrides and any(k.lower() == "state_dir" for k in overrides))
+
         ws_raw = get_val("WORKSPACE_DIR", Path.cwd())
         workspace_dir = Path(ws_raw).resolve()
 
-        repos_raw = get_val("REPOS_DIR", workspace_dir / "repos")
-        repos_dir = Path(repos_raw).resolve()
+        if ws_in_overrides and not repos_in_overrides:
+            repos_dir = (workspace_dir / "repos").resolve()
+        else:
+            repos_raw = get_val("REPOS_DIR", workspace_dir / "repos")
+            repos_dir = Path(repos_raw).resolve()
         repos_dir.mkdir(parents=True, exist_ok=True)
 
-        state_raw = get_val("STATE_DIR", workspace_dir / "state")
-        state_dir = Path(state_raw).resolve()
+        if ws_in_overrides and not state_in_overrides:
+            state_dir = (workspace_dir / "state").resolve()
+        else:
+            state_raw = get_val("STATE_DIR", workspace_dir / "state")
+            state_dir = Path(state_raw).resolve()
         state_dir.mkdir(parents=True, exist_ok=True)
 
         db_raw = get_val("DB_PATH", state_dir / "bughunter.sqlite")
@@ -108,6 +129,19 @@ class Config:
 
         log_raw = get_val("LOG_FILE_PATH", state_dir / "bughunter.log")
         log_file_path = Path(log_raw).resolve()
+
+        # Defaults for base_url and model
+        default_base_url = (
+            str(get_val("OPENAI_API_BASE") or "").strip()
+            or str(get_val("OPENAI_BASE_URL") or "").strip()
+            or str(get_val("LLM_BASE_URL") or "").strip()
+            or "https://api.scalemax.pro/v1"
+        )
+        default_model = (
+            str(get_val("LLM_MODEL") or "").strip()
+            or str(get_val("OPENAI_MODEL") or "").strip()
+            or "openai/gpt-6-luna"
+        )
 
         # Parse LLM Keys pool
         keys_pool_val = get_val("LLM_KEYS_POOL", "")
@@ -118,39 +152,95 @@ class Config:
                 if isinstance(item, KeyConfig):
                     parsed_keys.append(item)
                 elif isinstance(item, dict):
-                    k_api = item.get("api_key", "")
+                    k_api = str(item.get("api_key") or "").strip()
+                    if not k_api:
+                        continue
+                    b_url = str(item.get("base_url") or "").strip() or default_base_url
+                    mdl = str(item.get("model") or "").strip() or default_model
+                    prov = item.get("provider") or ("ScaleMax" if "scalemax" in b_url.lower() or "scalemax" in mdl.lower() else "OpenAI")
+                    try:
+                        prio_raw = item.get("priority")
+                        prio = int(prio_raw) if prio_raw is not None else (idx + 1)
+                    except Exception:
+                        prio = idx + 1
+                    k_idx = len(parsed_keys) + 1
                     parsed_keys.append(KeyConfig(
-                        id=item.get("id", f"key-{idx+1}"),
-                        provider=item.get("provider", "ScaleMax" if "scalemax" in item.get("base_url", "").lower() else "OpenAI"),
-                        base_url=item.get("base_url", ""),
-                        model=item.get("model", ""),
+                        id=item.get("id", f"key-{k_idx}"),
+                        provider=prov,
+                        base_url=b_url,
+                        model=mdl,
                         api_key=k_api,
                         masked_key=item.get("masked_key", mask_key(k_api)),
-                        priority=int(item.get("priority", idx + 1)),
+                        priority=prio,
+                    ))
+                elif isinstance(item, str):
+                    k_api = item.strip()
+                    if not k_api:
+                        continue
+                    k_idx = len(parsed_keys) + 1
+                    prov = "ScaleMax" if "scalemax" in default_base_url.lower() or "scalemax" in default_model.lower() else "OpenAI"
+                    parsed_keys.append(KeyConfig(
+                        id=f"key-{k_idx}",
+                        provider=prov,
+                        base_url=default_base_url,
+                        model=default_model,
+                        api_key=k_api,
+                        masked_key=mask_key(k_api),
+                        priority=k_idx,
                     ))
         elif isinstance(keys_pool_val, str) and keys_pool_val.strip():
             raw_str = keys_pool_val.strip()
+            is_json = False
             # Check if JSON string
             if raw_str.startswith("[") or raw_str.startswith("{"):
                 try:
                     loaded = json.loads(raw_str)
+                    is_json = True
                     if isinstance(loaded, dict):
                         loaded = [loaded]
-                    for idx, item in enumerate(loaded):
-                        k_api = item.get("api_key", "")
-                        parsed_keys.append(KeyConfig(
-                            id=item.get("id", f"key-{idx+1}"),
-                            provider=item.get("provider", "ScaleMax" if "scalemax" in item.get("base_url", "").lower() else "OpenAI"),
-                            base_url=item.get("base_url", ""),
-                            model=item.get("model", ""),
-                            api_key=k_api,
-                            masked_key=item.get("masked_key", mask_key(k_api)),
-                            priority=int(item.get("priority", idx + 1)),
-                        ))
+                    if isinstance(loaded, list):
+                        for idx, item in enumerate(loaded):
+                            if isinstance(item, dict):
+                                k_api = str(item.get("api_key") or "").strip()
+                                if not k_api:
+                                    continue
+                                b_url = str(item.get("base_url") or "").strip() or default_base_url
+                                mdl = str(item.get("model") or "").strip() or default_model
+                                prov = item.get("provider") or ("ScaleMax" if "scalemax" in b_url.lower() or "scalemax" in mdl.lower() else "OpenAI")
+                                try:
+                                    prio_raw = item.get("priority")
+                                    prio = int(prio_raw) if prio_raw is not None else (idx + 1)
+                                except Exception:
+                                    prio = idx + 1
+                                k_idx = len(parsed_keys) + 1
+                                parsed_keys.append(KeyConfig(
+                                    id=item.get("id", f"key-{k_idx}"),
+                                    provider=prov,
+                                    base_url=b_url,
+                                    model=mdl,
+                                    api_key=k_api,
+                                    masked_key=item.get("masked_key", mask_key(k_api)),
+                                    priority=prio,
+                                ))
+                            elif isinstance(item, str):
+                                k_api = item.strip()
+                                if not k_api:
+                                    continue
+                                k_idx = len(parsed_keys) + 1
+                                prov = "ScaleMax" if "scalemax" in default_base_url.lower() or "scalemax" in default_model.lower() else "OpenAI"
+                                parsed_keys.append(KeyConfig(
+                                    id=f"key-{k_idx}",
+                                    provider=prov,
+                                    base_url=default_base_url,
+                                    model=default_model,
+                                    api_key=k_api,
+                                    masked_key=mask_key(k_api),
+                                    priority=k_idx,
+                                ))
                 except Exception:
                     pass
 
-            if not parsed_keys:
+            if not parsed_keys and not is_json:
                 # Semicolon, comma, or newline separated
                 delimiters = [";", "\n", ","]
                 entries = [raw_str]
@@ -165,9 +255,26 @@ class Config:
                     if not entry:
                         continue
                     parts = [p.strip() for p in entry.split("|")]
-                    k_idx = len(parsed_keys) + 1
-                    if len(parts) == 3:
-                        b_url, mdl, k_api = parts[0], parts[1], parts[2]
+                    if len(parts) == 1 and parts[0]:
+                        k_api = parts[0]
+                        k_idx = len(parsed_keys) + 1
+                        provider = "ScaleMax" if "scalemax" in default_base_url.lower() or "scalemax" in default_model.lower() else "OpenAI"
+                        parsed_keys.append(KeyConfig(
+                            id=f"key-{k_idx}",
+                            provider=provider,
+                            base_url=default_base_url,
+                            model=default_model,
+                            api_key=k_api,
+                            masked_key=mask_key(k_api),
+                            priority=k_idx,
+                        ))
+                    elif len(parts) == 3:
+                        b_url = parts[0].strip() or default_base_url
+                        mdl = parts[1].strip() or default_model
+                        k_api = parts[2].strip()
+                        if not k_api:
+                            continue
+                        k_idx = len(parsed_keys) + 1
                         provider = "ScaleMax" if "scalemax" in b_url.lower() or "scalemax" in mdl.lower() else "OpenAI"
                         parsed_keys.append(KeyConfig(
                             id=f"key-{k_idx}",
@@ -179,7 +286,14 @@ class Config:
                             priority=k_idx,
                         ))
                     elif len(parts) >= 4:
-                        provider, b_url, mdl, k_api = parts[0], parts[1], parts[2], parts[3]
+                        prov = parts[0].strip()
+                        b_url = parts[1].strip() or default_base_url
+                        mdl = parts[2].strip() or default_model
+                        k_api = parts[3].strip()
+                        if not k_api:
+                            continue
+                        k_idx = len(parsed_keys) + 1
+                        provider = prov or ("ScaleMax" if "scalemax" in b_url.lower() or "scalemax" in mdl.lower() else "OpenAI")
                         parsed_keys.append(KeyConfig(
                             id=f"key-{k_idx}",
                             provider=provider,
@@ -190,13 +304,31 @@ class Config:
                             priority=k_idx,
                         ))
 
+        # Check OPENAI_API_KEY / LLM_API_KEY if no keys were parsed from pool
+        if not parsed_keys:
+            single_key = (
+                str(get_val("OPENAI_API_KEY") or "").strip()
+                or str(get_val("LLM_API_KEY") or "").strip()
+            )
+            if single_key and single_key != "NO_LLM_KEY_CONFIGURED":
+                provider = "ScaleMax" if "scalemax" in default_base_url.lower() or "scalemax" in default_model.lower() else "OpenAI"
+                parsed_keys.append(KeyConfig(
+                    id="key-1",
+                    provider=provider,
+                    base_url=default_base_url,
+                    model=default_model,
+                    api_key=single_key,
+                    masked_key=mask_key(single_key),
+                    priority=1,
+                ))
+
         # Default fallback key if none provided
         if not parsed_keys:
             parsed_keys.append(KeyConfig(
                 id="key-1",
                 provider="ScaleMax",
-                base_url="https://api.scalemax.ai/v1",
-                model="openai/claude-haiku-5.5",
+                base_url=default_base_url,
+                model=default_model,
                 api_key="NO_LLM_KEY_CONFIGURED",
                 masked_key="NO_KEY",
                 priority=1,
@@ -216,6 +348,10 @@ class Config:
             auto_discover = auto_discover_val.lower() in ("true", "1", "yes")
         else:
             auto_discover = bool(auto_discover_val)
+
+        primary_key = parsed_keys[0].api_key if parsed_keys else ""
+        primary_base = parsed_keys[0].base_url if parsed_keys else default_base_url
+        primary_model = parsed_keys[0].model if parsed_keys else default_model
 
         return cls(
             github_token=str(get_val("GITHUB_TOKEN", "")),
@@ -241,4 +377,7 @@ class Config:
             db_path=db_path,
             log_file_path=log_file_path,
             log_ring_buffer_size=int(get_val("LOG_RING_BUFFER_SIZE", 500)),
+            openai_api_base=primary_base,
+            openai_api_key=primary_key if primary_key != "NO_LLM_KEY_CONFIGURED" else "",
+            llm_model=primary_model,
         )

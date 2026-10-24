@@ -6,12 +6,11 @@ Backs up and restores bughunter.sqlite snapshot to/from a private GitHub reposit
 from __future__ import annotations
 
 import base64
-import os
 import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class StateSyncer:
@@ -23,7 +22,7 @@ class StateSyncer:
         state_dir: Path,
         state_repo: str,
         github_token: str,
-        logger: Optional[Any] = None,
+        logger: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path).resolve()
         self.state_dir = Path(state_dir).resolve()
@@ -48,7 +47,7 @@ class StateSyncer:
     def _auth_git_cmd(self, extra_args: list[str]) -> list[str]:
         cmd = ["git"]
         if self.github_token:
-            auth_bytes = f"x-access-token:{self.github_token}".encode("utf-8")
+            auth_bytes = f"x-access-token:{self.github_token}".encode()
             auth_b64 = base64.b64encode(auth_bytes).decode("ascii")
             cmd.extend(["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {auth_b64}"])
         cmd.extend(extra_args)
@@ -81,8 +80,8 @@ class StateSyncer:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             if res.returncode == 0:
                 # Configure git identity in clone dir
-                subprocess.run(["git", "config", "user.name", "AutoBugHunter[bot]"], cwd=self._clone_dir, check=False)
-                subprocess.run(["git", "config", "user.email", "autobughunter[bot]@users.noreply.github.com"], cwd=self._clone_dir, check=False)
+                subprocess.run(["git", "config", "user.name", "arrshh12"], cwd=self._clone_dir, check=False)
+                subprocess.run(["git", "config", "user.email", "arrshh12@users.noreply.github.com"], cwd=self._clone_dir, check=False)
                 return True
             self._log("WARN", f"Failed to clone state repo {self.state_repo}: {res.stderr.strip()[:200]}")
             return False
@@ -137,7 +136,6 @@ class StateSyncer:
         dest_file = self._clone_dir / "bughunter.sqlite"
 
         # 2. Perform atomic crash-consistent SQLite backup
-        backup_success = False
         try:
             src_conn = sqlite3.connect(str(self.db_path), timeout=10)
             src_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
@@ -145,12 +143,10 @@ class StateSyncer:
             src_conn.backup(dest_conn)
             dest_conn.close()
             src_conn.close()
-            backup_success = True
         except Exception as e:
             self._log("WARN", f"SQLite online backup warning: {e}; falling back to copy2")
             try:
                 shutil.copy2(self.db_path, dest_file)
-                backup_success = True
             except Exception as copy_err:
                 self._log("ERROR", f"Failed to stage bughunter.sqlite into sync repo: {copy_err}")
                 return False
@@ -162,8 +158,8 @@ class StateSyncer:
             return True
 
         # Configure git identity in clone repo
-        subprocess.run(["git", "config", "user.name", "AutoBugHunter[bot]"], cwd=self._clone_dir, check=False)
-        subprocess.run(["git", "config", "user.email", "autobughunter[bot]@users.noreply.github.com"], cwd=self._clone_dir, check=False)
+        subprocess.run(["git", "config", "user.name", "arrshh12"], cwd=self._clone_dir, check=False)
+        subprocess.run(["git", "config", "user.email", "arrshh12@users.noreply.github.com"], cwd=self._clone_dir, check=False)
         subprocess.run(["git", "branch", "-M", "main"], cwd=self._clone_dir, check=False)
 
         # 4. Commit and push
