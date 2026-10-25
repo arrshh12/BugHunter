@@ -221,12 +221,22 @@ class TestBugfindingAgent:
                 "tool": "semgrep",
                 "rule_id": "python-sql-injection",
                 "file": "src/app.py",
-                "line": 1,
-                "column": 1,
+                "line": "1",
+                "column": "1",
                 "message": "Potential SQL injection",
                 "severity": "ERROR",
                 "code_snippet": "x = 1",
-            }
+            },
+            {
+                "tool": "semgrep",
+                "rule_id": "python-bad-call",
+                "file": "src/app.py",
+                "line": "10",
+                "column": "invalid",
+                "message": "Bad call",
+                "severity": "WARNING",
+                "code_snippet": "x = 1",
+            },
         ]
         (repo_dir / ".static_findings.json").write_text(json.dumps(findings_data), encoding="utf-8")
 
@@ -243,6 +253,7 @@ class TestBugfindingAgent:
         content = log_file.read_text(encoding="utf-8")
         assert "src/app.py:1" in content
         assert "python-sql-injection" in content
+        assert "python-bad-call" in content
 
     def test_state_preservation_retains_done_entries_across_rescans(self, tmp_path: Path):
         """Verify that existing DONE entries are preserved across re-scans and not duplicated."""
@@ -479,6 +490,20 @@ class TestMainFixerAgentExecutionAndMutation:
         subprocess.run(["git", "add", "."], cwd=repo_main, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "init main"], cwd=repo_main, check=True, capture_output=True)
         assert fixer.resolve_default_branch(repo_main) == "main"
+
+        # 4. Non-standard branch (develop) returns develop
+        repo_develop = tmp_path / "ws_gm" / "owner__develop-repo"
+        repo_develop.mkdir(parents=True)
+        subprocess.run(["git", "init", "-b", "develop"], cwd=repo_develop, check=True, capture_output=True)
+        (repo_develop / "README.md").write_text("develop", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo_develop, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init develop"], cwd=repo_develop, check=True, capture_output=True)
+        assert fixer.resolve_default_branch(repo_develop) == "develop"
+
+        # 5. GitManager sync_repository correctly resolves develop
+        gm = GitManager(workspace_dir=tmp_path / "ws_gm")
+        gm_repo, gm_branch, _ = gm.sync_repository("owner/develop-repo", existing_path=repo_develop, allow_init=False)
+        assert gm_branch == "develop"
 
     def test_arrshh12_bot_identity_and_head_spec_construction(self, tmp_path: Path):
         """Verify arrshh12 dedicated bot identity and PR head-spec construction (arrshh12:<branch>)."""

@@ -279,7 +279,7 @@ class BugfindingAgent:
         repo_slugs: list[str],
         repos_dir: Path | None = None,
         graph_engine: CodeGraphEngine | None = None,
-        simulated_tool_outputs: dict[str, dict[str, Any]] | None | None = None,
+        simulated_tool_outputs: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Path]:
         """Scan multiple repositories, rank findings, and generate Bug-log.md per repo.
 
@@ -308,26 +308,41 @@ class BugfindingAgent:
                 tool_outputs = simulated_tool_outputs.get(slug, {})
                 raw_findings = self.ingest_scanner_outputs(tool_outputs)
             else:
+                def _parse_raw_findings(items: list[Any]) -> list[RawFinding]:
+                    parsed: list[RawFinding] = []
+                    for item in items:
+                        if isinstance(item, dict):
+                            line_val = item.get("line")
+                            col_val = item.get("column")
+                            try:
+                                line_num = int(line_val) if line_val is not None else 1
+                            except (ValueError, TypeError):
+                                line_num = 1
+                            try:
+                                col_num = int(col_val) if col_val is not None else 1
+                            except (ValueError, TypeError):
+                                col_num = 1
+                            parsed.append(
+                                RawFinding(
+                                    tool=str(item.get("tool", "static")),
+                                    rule_id=str(item.get("rule_id") or item.get("code") or "static-rule"),
+                                    file=str(item.get("file", "")),
+                                    line=line_num,
+                                    column=col_num,
+                                    message=str(item.get("message", "")),
+                                    severity=str(item.get("severity", "WARNING")),
+                                    code_snippet=str(item.get("code_snippet") or item.get("snippet") or ""),
+                                    raw_data=item,
+                                )
+                            )
+                    return parsed
+
                 findings_file = repo_path / ".static_findings.json" if repo_path else None
                 if findings_file and findings_file.exists():
                     try:
                         data = json.loads(findings_file.read_text(encoding="utf-8"))
                         if isinstance(data, list):
-                            for item in data:
-                                if isinstance(item, dict):
-                                    raw_findings.append(
-                                        RawFinding(
-                                            tool=item.get("tool", "static"),
-                                            rule_id=item.get("rule_id") or item.get("code") or "static-rule",
-                                            file=item.get("file", ""),
-                                            line=int(item.get("line", 1) or 1),
-                                            column=int(item.get("column", 1) or 1),
-                                            message=item.get("message", ""),
-                                            severity=item.get("severity", "WARNING"),
-                                            code_snippet=item.get("code_snippet") or item.get("snippet") or "",
-                                            raw_data=item,
-                                        )
-                                    )
+                            raw_findings = _parse_raw_findings(data)
                     except Exception:
                         pass
                 if not raw_findings and repo_path:
@@ -338,21 +353,7 @@ class BugfindingAgent:
                         if static_file and static_file.exists():
                             data = json.loads(static_file.read_text(encoding="utf-8"))
                             if isinstance(data, list):
-                                for item in data:
-                                    if isinstance(item, dict):
-                                        raw_findings.append(
-                                            RawFinding(
-                                                tool=item.get("tool", "static"),
-                                                rule_id=item.get("rule_id") or item.get("code") or "static-rule",
-                                                file=item.get("file", ""),
-                                                line=int(item.get("line", 1) or 1),
-                                                column=int(item.get("column", 1) or 1),
-                                                message=item.get("message", ""),
-                                                severity=item.get("severity", "WARNING"),
-                                                code_snippet=item.get("code_snippet") or item.get("snippet") or "",
-                                                raw_data=item,
-                                            )
-                                        )
+                                raw_findings = _parse_raw_findings(data)
                     except Exception:
                         pass
 

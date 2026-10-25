@@ -96,11 +96,21 @@ class MainFixerAgent:
                 text=True,
                 check=False,
             )
-            branches = {line.strip().lstrip("* ").strip() for line in p_branches.stdout.splitlines()}
+            branch_lines = p_branches.stdout.splitlines()
+            branches = {line.strip().lstrip("* ").strip() for line in branch_lines}
             if "main" in branches:
                 return "main"
             if "master" in branches:
                 return "master"
+            for line in branch_lines:
+                if line.startswith("* ") and not line.startswith("* (HEAD detached"):
+                    active = line[2:].strip()
+                    if active:
+                        return active
+            if branches:
+                for b in sorted(branches):
+                    if b:
+                        return b
         except Exception:
             pass
         return "main"

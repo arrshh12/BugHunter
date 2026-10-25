@@ -114,6 +114,31 @@ def test_rollback_working_tree_and_purge_artifacts(tmp_path: Path):
     assert "DIRTY MODIFICATION" not in dirty_file.read_text(encoding="utf-8")
 
 
+def test_rollback_working_tree_master_fallback_and_dirty_branch(tmp_path: Path):
+    """Verify rollback_working_tree falls back to master when main is unavailable and resets dirty feature branches."""
+    gm = GitManager(workspace_dir=tmp_path)
+    repo = tmp_path / "repo_master_only"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True)
+    (repo / "file.txt").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Switch to feature branch and make uncommitted modifications
+    subprocess.run(["git", "checkout", "-b", "fix/test-branch"], cwd=repo, check=True, capture_output=True)
+    (repo / "file.txt").write_text("modified on branch", encoding="utf-8")
+    (repo / "new_untracked.txt").write_text("untracked", encoding="utf-8")
+
+    # Call rollback with default_branch="main" (simulating default arg when repo is master-only)
+    gm.rollback_working_tree(repo, default_branch="main")
+
+    # Verify repo switched back to master and is clean
+    p_branch = subprocess.run(["git", "branch", "--show-current"], cwd=repo, check=True, capture_output=True, text=True)
+    assert p_branch.stdout.strip() == "master"
+    assert (repo / "file.txt").read_text(encoding="utf-8") == "initial"
+    assert not (repo / "new_untracked.txt").exists()
+
+
 # =========================================================================
 # Security Unit Tests for GitManager
 # =========================================================================

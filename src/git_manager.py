@@ -401,11 +401,24 @@ class GitManager:
         else:
             # Check if main exists, else master
             p_branches = subprocess.run(["git", "branch", "--list"], cwd=target_path, capture_output=True, text=True, check=False)
-            branches = {line.strip().lstrip("* ").strip() for line in p_branches.stdout.splitlines()}
+            branch_lines = p_branches.stdout.splitlines()
+            branches = {line.strip().lstrip("* ").strip() for line in branch_lines}
             if "main" in branches:
                 default_branch = "main"
             elif "master" in branches:
                 default_branch = "master"
+            else:
+                for line in branch_lines:
+                    if line.startswith("* ") and not line.startswith("* (HEAD detached"):
+                        active = line[2:].strip()
+                        if active:
+                            default_branch = active
+                            break
+                if default_branch == "main" and branches:
+                    for b in sorted(branches):
+                        if b:
+                            default_branch = b
+                            break
 
         # Checkout default branch and pull if remote exists
         subprocess.run(["git", "checkout", default_branch], cwd=target_path, check=False, capture_output=True)
@@ -696,7 +709,13 @@ class GitManager:
 
     def rollback_working_tree(self, repo_path: Path, default_branch: str = "main") -> None:
         """Clean working tree, checkout default branch, and purge temporary artifacts."""
-        subprocess.run(["git", "checkout", default_branch], cwd=repo_path, check=False, capture_output=True)
+        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, check=False, capture_output=True)
+        subprocess.run(["git", "clean", "-fd"], cwd=repo_path, check=False, capture_output=True)
+
+        p_co = subprocess.run(["git", "checkout", default_branch], cwd=repo_path, check=False, capture_output=True)
+        if p_co.returncode != 0 and default_branch == "main":
+            subprocess.run(["git", "checkout", "master"], cwd=repo_path, check=False, capture_output=True)
+
         subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, check=True, capture_output=True)
         subprocess.run(["git", "clean", "-fd"], cwd=repo_path, check=True, capture_output=True)
 

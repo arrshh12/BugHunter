@@ -675,7 +675,7 @@ class ReviewMonitor:
                 errors="replace",
             )
             commit_sha = p_sha.stdout.strip()
-            short_sha = commit_sha[:7]
+            short_sha = (commit_sha or "")[:7]
         except Exception as e:
             self._log(f"Failed committing review remediation: {e}", level="WARNING")
             if self.git_manager and hasattr(self.git_manager, "rollback_working_tree"):
