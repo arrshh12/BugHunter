@@ -209,6 +209,41 @@ class TestBugfindingAgent:
             assert "- [ ] **BUG-001**:" in content
             assert "src/app.py:5" in content
 
+    def test_bugfinding_agent_fallback_to_static_findings_json(self, tmp_path: Path):
+        """Verify BugfindingAgent falls back to .static_findings.json when simulated_tool_outputs is None."""
+        repo_dir = tmp_path / "repos" / "owner__test-repo"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / "src").mkdir()
+        (repo_dir / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+        findings_data = [
+            {
+                "tool": "semgrep",
+                "rule_id": "python-sql-injection",
+                "file": "src/app.py",
+                "line": 1,
+                "column": 1,
+                "message": "Potential SQL injection",
+                "severity": "ERROR",
+                "code_snippet": "x = 1",
+            }
+        ]
+        (repo_dir / ".static_findings.json").write_text(json.dumps(findings_data), encoding="utf-8")
+
+        agent = BugfindingAgent()
+        results = agent.scan_repositories(
+            repo_slugs=["owner/test-repo"],
+            repos_dir=tmp_path / "repos",
+            simulated_tool_outputs=None,
+        )
+
+        assert "owner/test-repo" in results
+        log_file = results["owner/test-repo"]
+        assert log_file.exists()
+        content = log_file.read_text(encoding="utf-8")
+        assert "src/app.py:1" in content
+        assert "python-sql-injection" in content
+
     def test_state_preservation_retains_done_entries_across_rescans(self, tmp_path: Path):
         """Verify that existing DONE entries are preserved across re-scans and not duplicated."""
         agent = BugfindingAgent()
@@ -419,6 +454,31 @@ class TestMainFixerAgentExecutionAndMutation:
         )
         lines = [line for line in logs_path.read_text(encoding="utf-8").splitlines() if line.startswith("| 20")]
         assert len(lines) == 2
+
+    def test_resolve_default_branch(self, tmp_path: Path):
+        """Verify resolve_default_branch identifies master or main correctly."""
+        fixer = MainFixerAgent()
+
+        # 1. Non-git dir returns main
+        assert fixer.resolve_default_branch(tmp_path / "non_git") == "main"
+
+        # 2. Master repo returns master
+        repo_master = tmp_path / "repo_master"
+        repo_master.mkdir()
+        subprocess.run(["git", "init", "-b", "master"], cwd=repo_master, check=True, capture_output=True)
+        (repo_master / "README.md").write_text("master", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo_master, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init master"], cwd=repo_master, check=True, capture_output=True)
+        assert fixer.resolve_default_branch(repo_master) == "master"
+
+        # 3. Main repo returns main
+        repo_main = tmp_path / "repo_main"
+        repo_main.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_main, check=True, capture_output=True)
+        (repo_main / "README.md").write_text("main", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo_main, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init main"], cwd=repo_main, check=True, capture_output=True)
+        assert fixer.resolve_default_branch(repo_main) == "main"
 
     def test_arrshh12_bot_identity_and_head_spec_construction(self, tmp_path: Path):
         """Verify arrshh12 dedicated bot identity and PR head-spec construction (arrshh12:<branch>)."""
@@ -662,7 +722,7 @@ class TestTwoAgentEndToEndIntegration:
         assert fix_res.success is True
         assert fix_res.bug_id == "BUG-001"
         assert fix_res.target_file == "src/app.py"
-        assert fix_res.head_spec == f"arrshh12:{fix_res.branch_name}"
+        assert fix_res.head_spec == fix_res.branch_name
 
         # Step 5: Verify Bug-log.md mutated in-place to DONE
         updated_log_content = target_log_path.read_text(encoding="utf-8")
@@ -738,7 +798,7 @@ class TestTwoAgentEndToEndIntegration:
         for fix in cycle_res["fix_results"]:
             assert fix["outcome"] == "PR_CREATED"
             assert fix["success"] is True
-            assert fix["head_spec"].startswith("arrshh12:")
+            assert fix["head_spec"] == fix["branch_name"]
 
     def test_fixer_push_failure_leaves_bug_pending_and_rolls_back(self, sample_config: Config, tmp_path: Path):
         """Verify that when Git push fails, the bug is NOT marked DONE in Bug-log.md and rollback is called."""

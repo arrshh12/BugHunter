@@ -75,6 +75,36 @@ class MainFixerAgent:
         bot_user = self.get_bot_user()
         return f"{bot_user}:{branch_name}"
 
+    def resolve_default_branch(self, repo_path: Path) -> str:
+        if not repo_path or not (repo_path / ".git").exists():
+            return "main"
+        try:
+            p_remote = subprocess.run(
+                ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if p_remote.returncode == 0 and p_remote.stdout.strip():
+                ref = p_remote.stdout.strip()
+                return ref[len("origin/"):] if ref.startswith("origin/") else ref
+            p_branches = subprocess.run(
+                ["git", "branch", "--list"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            branches = {line.strip().lstrip("* ").strip() for line in p_branches.stdout.splitlines()}
+            if "main" in branches:
+                return "main"
+            if "master" in branches:
+                return "master"
+        except Exception:
+            pass
+        return "main"
+
     def __init__(
         self,
         config: Config | None = None,
@@ -216,6 +246,7 @@ class MainFixerAgent:
         skip_files: list[str] | None = None,
         key_entry: KeyConfig | None = None,
         log_callback: Any = None,
+        default_branch: str | None = None,
     ) -> FixResult:
         """Consumes the next pending bug from Bug-log.md, plans patch, executes Aider,
 
@@ -223,6 +254,7 @@ class MainFixerAgent:
         """
         log_file = bug_log_path or (repo_path / "Bug-log.md")
         audit_file = logs_path or (repo_path / "logs.md")
+        base_branch = default_branch or self.resolve_default_branch(repo_path)
 
         # 1. Parse pending bugs (ZERO STATIC SCANNING INVARIANT)
         pending = self.parse_pending_bugs(log_file)
@@ -331,7 +363,7 @@ class MainFixerAgent:
         if not ver_res.verified:
             if self.git_manager:
                 try:
-                    self.git_manager.rollback_working_tree(repo_path, "main")
+                    self.git_manager.rollback_working_tree(repo_path, base_branch)
                 except Exception:
                     pass
             return FixResult(
@@ -346,7 +378,7 @@ class MainFixerAgent:
 
         # 7. Real Git Operations (Branch, Add, Commit, Push, PR)
         branch_name = f"fix/auto-{plan.scope}-{bug_id.lower()}"
-        head_spec = self.construct_head_spec(repo_slug, branch_name)
+        head_spec = self.construct_head_spec(repo_slug, branch_name) if repo_slug.lower().startswith("bitxwolf/") else branch_name
         pr_number = 100 + abs(hash(bug_id)) % 900
         pr_url = f"https://github.com/{repo_slug}/pull/{pr_number}"
 
@@ -380,10 +412,12 @@ class MainFixerAgent:
                         )
                         if actual_remote == "fork":
                             head_spec = self.construct_head_spec(repo_slug, branch_name)
+                        else:
+                            head_spec = branch_name
                     except Exception as e:
                         if hasattr(self.git_manager, "rollback_working_tree"):
                             try:
-                                self.git_manager.rollback_working_tree(repo_path, "main")
+                                self.git_manager.rollback_working_tree(repo_path, base_branch)
                             except Exception:
                                 pass
                         return FixResult(
@@ -418,7 +452,7 @@ class MainFixerAgent:
                             "gh", "pr", "create",
                             "--repo", repo_slug,
                             "--head", head_spec,
-                            "--base", "main",
+                            "--base", base_branch,
                             "--title", str(plan.pr_title),
                             "--body", str(plan.pr_body),
                         ],
@@ -439,7 +473,7 @@ class MainFixerAgent:
                         else:
                             if self.git_manager and hasattr(self.git_manager, "rollback_working_tree"):
                                 try:
-                                    self.git_manager.rollback_working_tree(repo_path, "main")
+                                    self.git_manager.rollback_working_tree(repo_path, base_branch)
                                 except Exception:
                                     pass
                             return FixResult(
@@ -456,7 +490,7 @@ class MainFixerAgent:
             except Exception as e:
                 if self.git_manager and hasattr(self.git_manager, "rollback_working_tree"):
                     try:
-                        self.git_manager.rollback_working_tree(repo_path, "main")
+                        self.git_manager.rollback_working_tree(repo_path, base_branch)
                     except Exception:
                         pass
                 return FixResult(

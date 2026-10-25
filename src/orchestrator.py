@@ -165,7 +165,7 @@ class Orchestrator:
                         (repo_slug,)
                     ).fetchone()
                     if row and row["fully_exhausted"] == 1 and row["last_scanned_sha"] == head_sha:
-                        self.logger.log("INFO", f"Repo {repo_slug} is already marked exhausted for commit {head_sha[:7]}. Skipping.")
+                        self.logger.log("INFO", f"Repo {repo_slug} is already marked exhausted for commit {(head_sha or '')[:7]}. Skipping.")
                         return {"outcome": "SKIPPED_EXHAUSTED", "repo_slug": repo_slug, "head_sha": head_sha}
 
             # 2. Open PR Collision Guard
@@ -335,7 +335,7 @@ class Orchestrator:
                 self.db.record_scan_result(repo_slug, head_sha, fully_exhausted=1)
                 self.db.update_repository_status(repo_slug, "IDLE")
                 self.db.add_scan_log(repo_slug, head_sha, key.id, "CLEAN_EXHAUSTED", time.time() - start_time)
-                self.logger.log("INFO", f"Repo {repo_slug} marked CLEAN_EXHAUSTED for commit {head_sha[:7]}")
+                self.logger.log("INFO", f"Repo {repo_slug} marked CLEAN_EXHAUSTED for commit {(head_sha or '')[:7]}")
                 return {"outcome": "CLEAN_EXHAUSTED", "repo_slug": repo_slug, "head_sha": head_sha}
 
             # 6. Verification Gate

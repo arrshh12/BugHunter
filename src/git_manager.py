@@ -401,10 +401,10 @@ class GitManager:
         else:
             # Check if main exists, else master
             p_branches = subprocess.run(["git", "branch", "--list"], cwd=target_path, capture_output=True, text=True, check=False)
-            branch_out = p_branches.stdout
-            if "main" in branch_out:
+            branches = {line.strip().lstrip("* ").strip() for line in p_branches.stdout.splitlines()}
+            if "main" in branches:
                 default_branch = "main"
-            elif "master" in branch_out:
+            elif "master" in branches:
                 default_branch = "master"
 
         # Checkout default branch and pull if remote exists

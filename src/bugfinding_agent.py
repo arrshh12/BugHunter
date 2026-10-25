@@ -7,6 +7,7 @@ per-repo Bug-log.md maintaining state across re-scans.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -302,8 +303,59 @@ class BugfindingAgent:
                         cand = cand_alt
                 repo_path = cand
 
-            tool_outputs = (simulated_tool_outputs or {}).get(slug, {})
-            raw_findings = self.ingest_scanner_outputs(tool_outputs)
+            raw_findings: list[RawFinding] = []
+            if simulated_tool_outputs is not None:
+                tool_outputs = simulated_tool_outputs.get(slug, {})
+                raw_findings = self.ingest_scanner_outputs(tool_outputs)
+            else:
+                findings_file = repo_path / ".static_findings.json" if repo_path else None
+                if findings_file and findings_file.exists():
+                    try:
+                        data = json.loads(findings_file.read_text(encoding="utf-8"))
+                        if isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict):
+                                    raw_findings.append(
+                                        RawFinding(
+                                            tool=item.get("tool", "static"),
+                                            rule_id=item.get("rule_id") or item.get("code") or "static-rule",
+                                            file=item.get("file", ""),
+                                            line=int(item.get("line", 1) or 1),
+                                            column=int(item.get("column", 1) or 1),
+                                            message=item.get("message", ""),
+                                            severity=item.get("severity", "WARNING"),
+                                            code_snippet=item.get("code_snippet") or item.get("snippet") or "",
+                                            raw_data=item,
+                                        )
+                                    )
+                    except Exception:
+                        pass
+                if not raw_findings and repo_path:
+                    try:
+                        from src.static_scanner import StaticScanner
+                        scanner = StaticScanner(config=self.config)
+                        static_file = scanner.run_static_prefilter(repo_path, skip_files=[])
+                        if static_file and static_file.exists():
+                            data = json.loads(static_file.read_text(encoding="utf-8"))
+                            if isinstance(data, list):
+                                for item in data:
+                                    if isinstance(item, dict):
+                                        raw_findings.append(
+                                            RawFinding(
+                                                tool=item.get("tool", "static"),
+                                                rule_id=item.get("rule_id") or item.get("code") or "static-rule",
+                                                file=item.get("file", ""),
+                                                line=int(item.get("line", 1) or 1),
+                                                column=int(item.get("column", 1) or 1),
+                                                message=item.get("message", ""),
+                                                severity=item.get("severity", "WARNING"),
+                                                code_snippet=item.get("code_snippet") or item.get("snippet") or "",
+                                                raw_data=item,
+                                            )
+                                        )
+                    except Exception:
+                        pass
+
             triaged = self.triage_skill.triage_and_rank(
                 raw_findings=raw_findings,
                 repo_path=repo_path or Path.cwd(),

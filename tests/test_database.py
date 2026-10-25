@@ -292,3 +292,47 @@ def test_query_similar_bugs_fallback_limit_500(tmp_path: Path):
         assert not any(r["code_snippet"] == "code_50" for r in old_results)
 
 
+def test_is_thread_remediated_require_resolved(tmp_path: Path):
+    """Verify is_thread_remediated supports require_resolved flag."""
+    db = Database(tmp_path / "test_remediated.sqlite")
+    thread_1 = "thread-pending"
+    thread_2 = "thread-resolved"
+
+    db.record_review_remediation(
+        thread_id=thread_1,
+        comment_id=101,
+        repo_slug="owner/repo",
+        pr_number=1,
+        commit_sha="a" * 40,
+        reviewer="bot",
+        path="src/main.py",
+        line=10,
+        feedback_summary="Pending fix",
+        status="IN_PROGRESS",
+    )
+    db.record_review_remediation(
+        thread_id=thread_2,
+        comment_id=102,
+        repo_slug="owner/repo",
+        pr_number=1,
+        commit_sha="b" * 40,
+        reviewer="bot",
+        path="src/main.py",
+        line=20,
+        feedback_summary="Resolved fix",
+        status="RESOLVED",
+    )
+
+    # With require_resolved=False, both exist
+    assert db.is_thread_remediated(thread_1, require_resolved=False) is True
+    assert db.is_thread_remediated(thread_2, require_resolved=False) is True
+
+    # With require_resolved=True, only thread_2 is considered remediated
+    assert db.is_thread_remediated(thread_1, require_resolved=True) is False
+    assert db.is_thread_remediated(thread_2, require_resolved=True) is True
+
+    # Non-existent thread
+    assert db.is_thread_remediated("thread-nonexistent", require_resolved=False) is False
+    assert db.is_thread_remediated("thread-nonexistent", require_resolved=True) is False
+
+

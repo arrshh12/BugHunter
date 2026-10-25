@@ -263,3 +263,40 @@ def test_relative_import_resolution_no_empty_target(tmp_path: Path):
     assert all(e.target != "" for e in root_edges)
     assert any(e.target == "pkg" for e in root_edges)
 
+
+def test_inbound_call_disambiguation_for_common_functions(tmp_path: Path):
+    """Verify common function names like run/execute are not attributed as inbound callers without import."""
+    repo = tmp_path / "disambiguate_repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+
+    # Module A: defines run
+    (src / "service_a.py").write_text("def run():\n    return 42\n", encoding="utf-8")
+
+    # Module B: imports service_a and calls run
+    (src / "caller_b.py").write_text(
+        "from src.service_a import run\n\n"
+        "def start():\n"
+        "    return run()\n",
+        encoding="utf-8",
+    )
+
+    # Module C: unrelated, defines/calls its own run without importing service_a
+    (src / "unrelated_c.py").write_text(
+        "def execute():\n"
+        "    run()\n\n"
+        "def run():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    engine = CodeGraphEngine(repo)
+    engine.build_graph()
+
+    ctx_a = engine.get_localized_context("src/service_a.py")
+    # caller_b should be recognized as inbound caller
+    assert any("caller_b.py" in c for c in ctx_a.inbound_callers)
+    # unrelated_c should NOT be recognized as inbound caller for service_a
+    assert not any("unrelated_c.py" in c for c in ctx_a.inbound_callers)
+

@@ -456,23 +456,35 @@ class NativeAstGraphEngine:
         # 2. Inbound callers (who imports or calls into this file?)
         inbound_callers: list[str] = []
         normalized_mod_import = target_file.replace("/", ".").replace(".py", "")
+        modules_importing_target: set[str] = set()
 
         for edge in self.edges:
             if edge.edge_type == "IMPORTS":
                 target_name = edge.target
-                if target_name in (normalized_mod_import, target_file) or target_file.endswith(f"/{target_name}.py"):
+                if (
+                    target_name in (normalized_mod_import, target_file)
+                    or target_file == f"{target_name}.py"
+                    or target_file.endswith(f"/{target_name}.py")
+                ):
+                    modules_importing_target.add(edge.source)
                     if edge.source != target_file and not edge.source.startswith("test"):
                         caller_desc = edge.source
                         if caller_desc not in inbound_callers:
                             inbound_callers.append(caller_desc)
 
         # Check call graph for inbound calls
+        common_func_names = {
+            "run", "main", "get", "execute", "start", "stop", "init",
+            "setup", "update", "close", "read", "write", "call", "handle", "load", "save"
+        }
         defined_func_names = {f.name for f in functions}
         for edge in self.edges:
             if edge.edge_type == "CALLS" and edge.target in defined_func_names:
                 caller_fn = edge.source
                 caller_mod = caller_fn.split("::")[0]
                 if caller_mod != target_file and not caller_mod.startswith("test"):
+                    if edge.target.lower() in common_func_names and caller_mod not in modules_importing_target:
+                        continue
                     desc = f"{caller_mod} (calls {edge.target})"
                     if desc not in inbound_callers and caller_mod not in inbound_callers:
                         inbound_callers.append(desc)

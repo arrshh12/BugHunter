@@ -816,13 +816,15 @@ class Database:
             ).fetchone()
             return int(row["id"]) if row else 0
 
-    def is_thread_remediated(self, thread_id: str) -> bool:
+    def is_thread_remediated(self, thread_id: str, require_resolved: bool = False) -> bool:
         """Check if a review thread has already been remediated."""
+        query = "SELECT 1 FROM review_remediations WHERE thread_id = ?"
+        params: list[Any] = [thread_id]
+        if require_resolved:
+            query += " AND status = 'RESOLVED'"
+        query += " LIMIT 1"
         with self.get_connection() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM review_remediations WHERE thread_id = ? LIMIT 1",
-                (thread_id,),
-            ).fetchone()
+            row = conn.execute(query, tuple(params)).fetchone()
             return row is not None
 
     def get_review_remediations(
