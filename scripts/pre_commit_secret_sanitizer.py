@@ -141,7 +141,7 @@ def is_blocked_file(filepath: str) -> bool:
 
     Returns True if file is blocked, False if clean.
     """
-    normalized = filepath.strip().strip('"\\'').replace("\\", "/")
+    normalized = filepath.strip().strip('"\'').replace("\\", "/")
     filename = pathlib.PurePosixPath(normalized).name
     filename_lower = filename.lower()
 
@@ -167,7 +167,7 @@ def check_blocked_file(filepath: str) -> Optional[str]:
 
     Returns explanation reason if blocked, None if clean.
     """
-    normalized = filepath.strip().strip('"\\'').replace("\\", "/")
+    normalized = filepath.strip().strip('"\'').replace("\\", "/")
     filename = pathlib.PurePosixPath(normalized).name
     filename_lower = filename.lower()
 
@@ -282,7 +282,7 @@ def get_staged_files(repo_path: str = ".") -> List[str]:
             errors="replace",
             check=True,
         )
-        return [f.strip().strip('"\\'') for f in res.stdout.splitlines() if f.strip()]
+        return [f.strip().strip('"\'') for f in res.stdout.splitlines() if f.strip()]
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         sys.stderr.write(f"Git error checking staged files: {e}\n")
         return []
