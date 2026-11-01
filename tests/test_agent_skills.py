@@ -439,7 +439,8 @@ def test_git_manager_scoped_atomic_branch(tmp_path: Path):
 
 def test_task_prompt_stop_the_line_content():
     """Verify prompts/task_prompt.txt embeds Stop-the-Line protocol, conventional commits, and reproducer schema."""
-    prompt_path = Path("prompts/task_prompt.txt")
+    repo_root = Path(__file__).resolve().parent.parent
+    prompt_path = repo_root / "prompts" / "task_prompt.txt"
     assert prompt_path.is_file()
     content = prompt_path.read_text(encoding="utf-8")
 

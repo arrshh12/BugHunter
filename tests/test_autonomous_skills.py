@@ -30,7 +30,8 @@ from tests.test_agent_skills import (
 
 def test_bug_finder_prompt_file_contents():
     """Verify prompts/bug_finder_prompt.txt codifies 5-axis triage and threat modeling."""
-    prompt_path = Path("prompts/bug_finder_prompt.txt")
+    repo_root = Path(__file__).resolve().parent.parent
+    prompt_path = repo_root / "prompts" / "bug_finder_prompt.txt"
     assert prompt_path.exists(), "prompts/bug_finder_prompt.txt must exist"
     content = prompt_path.read_text(encoding="utf-8")
     assert "5-AXIS TRIAGE STANDARD" in content
