@@ -62,7 +62,7 @@ class TestEvasiveSecretFormats:
         assert len(findings) > 0, "VULNERABILITY: Type-annotated variable assignments evade detection"
 
     def test_evasion_byte_and_raw_strings(self):
-        """Byte strings (`b'...'`) and raw strings (`r'...'`)."""
+        """Byte strings (`b'...'`) and raw strings (`r'...')."""
         b_snippet = f'api_key = b"{SAMPLE_HIGH_ENTROPY}"'
         r_snippet = f'token = r"{SAMPLE_HIGH_ENTROPY}"'
         assert len(scan_text_for_secrets(b_snippet)) > 0, "VULNERABILITY: Byte string assignments evade detection"
